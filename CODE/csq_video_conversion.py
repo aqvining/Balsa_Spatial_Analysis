@@ -15,10 +15,10 @@ import datetime as dt
 #%%
 #set up text file for writing metadata
 os.chdir("C:\\Users\\avining\\Documents\\Balsa_Spatial_Analysis\\DOCS")
-metadata_file = open("video_file_timestamp_metadata.txt", "w")
+metadata_file = open("video_file_timestamp_metadata_cam2.txt", "w") #create seperate files for cam1 and cam2, run loop once for each
 #%%
 #get timestamp of first and last frame in every file
-os.chdir("F:\\BCI Ochroma Cam1") #external hard drive with thermal videos must be attached to the F Drive
+os.chdir("F:\\BCI Ochroma Cam2") #external hard drive with thermal videos must be attached to the F Drive. Be sure to rename for each run of loop
 os.listdir()
 for folder in os.listdir():
     print("evaluating " + folder)
