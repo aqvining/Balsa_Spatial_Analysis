@@ -1,0 +1,101 @@
+---
+title: "Spatial-Temporal Distribution of Kinkajous in a Balsa Tree"
+output:
+  html_document:
+    df_print: paged
+  html_notebook: default
+  pdf_document: default
+---
+
+In this analysis, we explore how kinkajous distributed their time within a single balsa tree on the Island of Barro Colorado. We divided the tree into three regions: front (1), upper (2), and back (3). Data were collected by recording the movements of kinkajous with a thermal camera for 4 hour periods on most nights from Dec 14 2019 - Jan 26 2020. Videos were then transcribed by an observer that recorded how many kinkajous were in each region of the tree for every minute of the video. The number of kinkajous that were counted, but not directly visible at the time of the count, were also noted for each minute. Data from each video were recorded in a seperate csv file, so our first step is to load these files and concatenate them into a single data frame. The transcribed data use video timestamps to denote time, so we additionally use an automated process to get the start timestamp of each video file (seperate file, this folder) and thus annotate the data with date-times.
+
+```{r, setup, include=FALSE}
+library(tidyverse)
+library(lubridate)
+```
+
+```{r data_load, include = FALSE}
+file_names <- dir("../DATA/raw/Kinkajou_Scans_Nele", pattern = ".csv")
+
+video_metadata_location <- "../DATA/raw/Video_metadata/video_file_timestamp_metadata_cam1.txt"
+video_metadata <- readChar(con = video_metadata_location, nchars = file.info(video_metadata_location)$size)
+video_metadata <- str_split(video_metadata, pattern = "Folder: ")[[1]][-1] #break all metadata into strings for each observation period (and remove preceding empty character)
+video_metadata <- str_split(video_metadata, pattern =  "start = ") #find the start time of all files
+start_timestamps <- sapply(video_metadata, function(X) str_split(X[2], pattern = "\r")[[1]][1]) #extract start time of first file and remove all extra data
+start_timestamps <- as.POSIXct(start_timestamps, format = "%Y-%m-%d_%H-%M-%S", tz = "GMT")
+start_timestamps <- with_tz(start_timestamps, "America/Panama")
+
+
+all_kinkajou_scans <-  c()
+Jan_22_check = FALSE #used later to parse two video files that started on the same day (one AM one PM)
+
+for(file_name in file_names) {
+  scan_data <- read_csv(paste("../DATA/raw/Kinkajou_Scans_Nele/", file_name, sep = ""), skip = 1)
+  colnames(scan_data) <- c("timestamp", "Region1_visible", "Region1_hidden", "Region2_visible", "Region2_hidden", "Region3_visible", "Region3_hidden", "Kinkajou_Notes", "Video_Notes", "Extraneous")
+  scan_data <- scan_data[complete.cases(scan_data$timestamp),] %>% select(! Extraneous)
+  start_date <- str_split(file_name ,pattern = "_Cam")[[1]][1] #str_split returns a list of string components. We want the first (and only) element of this list - then the first string element in this list gives the date
+  start_date <- as.POSIXct(paste("20", start_date, sep = ""), format = "%Y_%m_%d") #date needs all 4 digits
+  start_timestamp <- start_timestamps[which(date(start_timestamps) == start_date)]
+  #Two video files started on Jan 22nd, one AM and one PM. Because this is the ONLY date where this occurred, I implemented a quick and dirty check to parse the AM file first and the PM file second, below
+  if (length(start_timestamp) > 1)
+      if (! Jan_22_check) {
+        start_timestamp <- start_timestamp[1]
+        Jan_22_check <-  TRUE
+      } else start_timestamp <- start_timestamp[2]
+  #end Jan 22 case
+  scan_data$timestamp <- start_timestamp + period_to_seconds(hms(scan_data$timestamp))
+  scan_data$study_night <- round(as.numeric(start_timestamp - start_timestamps[1], units = "days"), digits = 0)
+  all_kinkajou_scans <- rbind(all_kinkajou_scans, scan_data)
+}
+```
+
+The resulting data stucture looks as such:
+
+```{r show_data}
+head(all_kinkajou_scans)
+```
+
+There a some data tidying steps that still need to be taken to easily analyze the data. First, we convert the NA's in data columns (denoting no kinkajous) to 0s. We also modify the data to give the number of visible kinkajous and the number of hidden kinkajous, rather than the total number of kinkajous and the number of hidden kinkajous - simply for ease of use. Finally, we convert the data from a wide to a long format. By only have a single count value per row, with columns denoting what this count represents, we can utilize more flexible plotting and analysis options.
+
+
+```{r data_prep, include = FALSE}
+#convert empty count cells (NAs) to 0
+count_data <- all_kinkajou_scans[,2:7] # columns 2 through 7 are the count data columns, we want NAs in the notes columns
+count_data[is.na(count_data)] <- 0
+all_kinkajou_scans[,2:7] <- count_data
+
+#The data as read contain the TOTAL number of kinkajous and the number of those total that are hidden. As suggested by the new names given to the columns in this data structure, we want the count of visible and hidden kinkajous, not the total. The adjustment is made below
+all_kinkajou_scans <- mutate(all_kinkajou_scans, Region1_visible = Region1_visible - Region1_hidden, Region2_visible = Region2_visible - Region2_hidden, Region3_visible = Region3_visible - Region3_hidden)
+
+#pivot dataframe to long format for easy usage in ggplot
+all_kinkajou_scans_long <- pivot_longer(all_kinkajou_scans,
+                                   cols = Region1_visible:Region3_hidden,
+                                   names_to = c("Region", "Visibility"),
+                                   names_sep = "_",
+                                   values_to = "Count")
+
+write.csv(all_kinkajou_scans_long, "../DATA/processed/all_kinkajou_scans.csv")
+```
+
+The result looks as such:
+
+```{r show_data2}
+head(all_kinkajou_scans_long)
+```
+
+We start simply by plotting how much total kinkajou time (2 kinkajous in a tree region during the same 1 minute epoch counts as 2 kinkajou minutes) was spent in each region. We then break this down a little, spliting the data by study day(night) and using color to show how much of that time the kinkajous were visible and how much of that time they were hidden and assumed to be present.
+
+```{r data_visuals}
+#We create a series of plots with increasing complexity as a demonstration of building visualizatins in ggplot
+plot_data <- ggplot(all_kinkajou_scans_long)
+
+plot_data + geom_col(aes(x = Region, y = Count))
+
+ggplot(all_kinkajou_scans_long) +
+  geom_col(aes(x = Region, y = Count, fill = Visibility)) +
+  facet_wrap(~study_night) +
+  theme(axis.text.x = element_text(angle = 90))
+```
+
+
+
