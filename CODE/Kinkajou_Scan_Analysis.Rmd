@@ -7,17 +7,50 @@ output:
   pdf_document: default
 ---
 
-In this analysis, we explore how kinkajous distributed their time within a single balsa tree on the Island of Barro Colorado. We divided the tree into three regions: front (1), upper (2), and back (3). Data were collected by recording the movements of kinkajous with a thermal camera for 4 hour periods on most nights from Dec 14 2019 - Jan 26 2020. Videos were then transcribed by an observer that recorded how many kinkajous were in each region of the tree for every minute of the video. The number of kinkajous that were counted, but not directly visible at the time of the count, were also noted for each minute. Data from each video were recorded in a seperate csv file, so our first step is to load these files and concatenate them into a single data frame. The transcribed data use video timestamps to denote time, so we additionally use an automated process to get the start timestamp of each video file (seperate file, this folder) and thus annotate the data with date-times.
-
 ```{r, setup, include=FALSE}
+knitr::opts_knit$set(root.dir = 'C:/Users/avining/ownCloud/Alexanders_Dissertation/6. Crown Complexity')
 library(tidyverse)
 library(lubridate)
+library(sf)
+library(dplyr)
+library(ggplot2)
+library(scales)
 ```
 
-```{r data_load, include = FALSE}
-file_names <- dir("../DATA/raw/Kinkajou_Scans_Nele", pattern = ".csv")
+```{r helper_functions}
+get_study_day_and_time <- function(Datetime_string, study_start) {
+  #study start must include the approximate start time of evening observations if overnight follows are to be binned into the correct study day
+  datetime_vector <- strsplit(Datetime_string, split = "")[[1]]
+  date1 <- paste(paste(datetime_vector[1:6], collapse = ""), 
+                "20", 
+                paste(datetime_vector[7:8], collapse = ""), sep = "") %>% as.POSIXct(format = "%d-%m-%Y", tz = "America/Panama")
+  time1 = paste(datetime_vector[9:10], collapse = "")
+  study_day = difftime(date1, study_start, units = "days") %>% floor()
+  return(list(study_day, time1))
+}
 
-video_metadata_location <- "../DATA/raw/Video_metadata/video_file_timestamp_metadata_cam1.txt"
+get_kinkMinutesPerHour <- function(count_data, categories = 6) {
+  #default value for categories assumes count data has 6 rows per observational minute, representing 3 Regions x 2 states (hidden or visible)
+  minutes_per_hour = (sum(count_data)/(length(count_data)/categories)) * 60
+  return(minutes_per_hour)
+}
+
+get_growth_index <- function(time_series) {
+  removed = 0
+  while(time_series[1] == 0) {
+    time_series <- time_series[-1]
+    warning("initial observation removed due to value of 0")
+    removed = removed + 1
+  }
+  growth_index <- ((time_series-time_series[1])/time_series[1]) * 100
+  return(c(rep(NA, times = removed), growth_index))
+}
+```
+
+```{r data_load, message = FALSE}
+file_names <- dir("./DATA/raw/Kinkajou_Scans_Nele", pattern = ".csv")
+
+video_metadata_location <- "./DATA/raw/Video_metadata/video_file_timestamp_metadata_cam1.txt"
 video_metadata <- readChar(con = video_metadata_location, nchars = file.info(video_metadata_location)$size)
 video_metadata <- str_split(video_metadata, pattern = "Folder: ")[[1]][-1] #break all metadata into strings for each observation period (and remove preceding empty character)
 video_metadata <- str_split(video_metadata, pattern =  "start = ") #find the start time of all files
@@ -30,7 +63,7 @@ all_kinkajou_scans <-  c()
 Jan_22_check = FALSE #used later to parse two video files that started on the same day (one AM one PM)
 
 for(file_name in file_names) {
-  scan_data <- read_csv(paste("../DATA/raw/Kinkajou_Scans_Nele/", file_name, sep = ""), skip = 1)
+  scan_data <- read_csv(paste("./DATA/raw/Kinkajou_Scans_Nele/", file_name, sep = ""), skip = 1, progress = FALSE)
   colnames(scan_data) <- c("timestamp", "Region1_visible", "Region1_hidden", "Region2_visible", "Region2_hidden", "Region3_visible", "Region3_hidden", "Kinkajou_Notes", "Video_Notes", "Extraneous")
   scan_data <- scan_data[complete.cases(scan_data$timestamp),] %>% select(! Extraneous)
   start_date <- str_split(file_name ,pattern = "_Cam")[[1]][1] #str_split returns a list of string components. We want the first (and only) element of this list - then the first string element in this list gives the date
@@ -44,21 +77,14 @@ for(file_name in file_names) {
       } else start_timestamp <- start_timestamp[2]
   #end Jan 22 case
   scan_data$timestamp <- start_timestamp + period_to_seconds(hms(scan_data$timestamp))
-  scan_data$study_night <- round(as.numeric(start_timestamp - start_timestamps[1], units = "days"), digits = 0)
+  scan_data$Study_night <- round(as.numeric(start_timestamp - start_timestamps[1], units = "days"), digits = 0)
   all_kinkajou_scans <- rbind(all_kinkajou_scans, scan_data)
 }
 ```
 
-The resulting data stucture looks as such:
-
-```{r show_data}
-head(all_kinkajou_scans)
-```
-
-There a some data tidying steps that still need to be taken to easily analyze the data. First, we convert the NA's in data columns (denoting no kinkajous) to 0s. We also modify the data to give the number of visible kinkajous and the number of hidden kinkajous, rather than the total number of kinkajous and the number of hidden kinkajous - simply for ease of use. Finally, we convert the data from a wide to a long format. By only have a single count value per row, with columns denoting what this count represents, we can utilize more flexible plotting and analysis options.
 
 
-```{r data_prep, include = FALSE}
+```{r data_prep}
 #convert empty count cells (NAs) to 0
 count_data <- all_kinkajou_scans[,2:7] # columns 2 through 7 are the count data columns, we want NAs in the notes columns
 count_data[is.na(count_data)] <- 0
@@ -74,16 +100,10 @@ all_kinkajou_scans_long <- pivot_longer(all_kinkajou_scans,
                                    names_sep = "_",
                                    values_to = "Count")
 
-write.csv(all_kinkajou_scans_long, "../DATA/processed/all_kinkajou_scans.csv")
+all_kinkajou_scans_long$Region <- sapply(all_kinkajou_scans_long$Region, switch, "Region1" = "1", "Region2" = "2", "Region3" = "3") %>% factor()
+
+write.csv(all_kinkajou_scans_long, "./DATA/processed/all_kinkajou_scans.csv")
 ```
-
-The result looks as such:
-
-```{r show_data2}
-head(all_kinkajou_scans_long)
-```
-
-We start simply by plotting how much total kinkajou time (2 kinkajous in a tree region during the same 1 minute epoch counts as 2 kinkajou minutes) was spent in each region. We then break this down a little, spliting the data by study day(night) and using color to show how much of that time the kinkajous were visible and how much of that time they were hidden and assumed to be present.
 
 ```{r data_visuals}
 #We create a series of plots with increasing complexity as a demonstration of building visualizatins in ggplot
@@ -93,9 +113,89 @@ plot_data + geom_col(aes(x = Region, y = Count))
 
 ggplot(all_kinkajou_scans_long) +
   geom_col(aes(x = Region, y = Count, fill = Visibility)) +
-  facet_wrap(~study_night) +
-  theme(axis.text.x = element_text(angle = 90))
+  facet_wrap(~Study_night)
 ```
 
+```{r load_balsa_data, message = FALSE}
+files = strsplit(dir("./DATA/raw/Flower_geopackages"), split = "[.]") #seperate filenames from extensions for all files in folder
+files = files[sapply(files, function(X) X[2] == "gpkg")] #reduce file list only to gpkg files
+geopackages <- vector("list", length = length(files))
+for(i in seq_along(files)){
+  flower_sf <- st_read(paste("./DATA/raw/Flower_geopackages/", files[[i]][1], ".", files[[i]][2], sep = ""), quiet = TRUE)
+  flower_sf$Region <- strsplit(files[[i]][1], split = NULL)[[1]] %>% last() %>% as.numeric() + 1 #QGIS labelled regioning grouping outputs at 0 (last element of savefile string); add one to get region labels that match kinkajou data
+  flower_sf$Date <- strsplit(files[[i]][1], split = "_")[[1]][2]
+  geopackages[[i]] <- flower_sf
+}
+all_upflowers <- do.call(rbind, geopackages)
+all_upflowers$Region <- factor(all_upflowers$Region)
 
+#Drone flights are labelled by a character with date and time of scan. The date needs to be converted to a study day variable and the time put into its own column
+all_upflowers <- all_upflowers %>% mutate(Study_night = sapply(Date, function(X) get_study_day_and_time(X, study_start = as.POSIXct("2019-12-14 18:00:00", tz = "America/Panama"))[[1]]),
+                                          Time = factor(sapply(Date, function(X) get_study_day_and_time(X, study_start= as.POSIXct("2019-12-14 18:00:00", tz = "America/Panama")) [[2]])))
+
+```
+
+```{r viz_by_day}
+ggplot(all_upflowers, aes(x = Study_night, color = Time)) + geom_line(stat = "count") + geom_point(stat = "count") +
+  theme_classic() +
+  labs(title = "Upright Flowers Counted")
+
+ggplot(all_kinkajou_scans_long, aes(x = Study_night, y = Count)) + stat_summary(fun = "get_kinkMinutesPerHour", geom = "line") + stat_summary(fun = "get_kinkMinutesPerHour", geom = "point") +
+  theme_classic() +
+  labs(title = "Time Spent in Crown", y = "Kinkajou Minutes per Hour")
+
+
+
+
+  
+flower_counts <- all_upflowers %>% group_by(Study_night, Time) %>% summarise(Count = n()) %>% transform(Growth = get_growth_index(Count))
+kinkajou_counts <- all_kinkajou_scans_long %>% group_by(Study_night) %>% summarise(Minutes_Per_Hour = get_kinkMinutesPerHour(Count)) %>% transform(Growth = get_growth_index(Minutes_Per_Hour))
+
+ggplot(flower_counts, aes(x = Study_night, y = Growth)) + 
+  geom_line(aes(color = Time), stat = "identity") +
+  geom_point(aes(color = Time), stat = "identity") +
+  geom_line(data = kinkajou_counts, stat = "identity", linetype = "dashed") +
+  geom_point(data = kinkajou_counts, stat = "identity") +
+  theme_classic() +
+  scale_color_discrete(name = "Flower Count") +
+  labs(title = "Growth in Minutes per Hour Kinkajous spend in a balsa crown (black dotted) \n and balsa flower counts (solid) over study period",
+       y = "Growth (%)",
+       x = "Study Night")
+
+ggplot(all_upflowers) + geom_sf(aes(color = factor(Date), shape = factor(Region)))
+ggplot(all_upflowers) + geom_bar(aes(x = factor(Region))) + facet_wrap(~Date)
+
+ggplot(flower_counts, aes(x = Study_night, y = Growth)) + 
+  geom_line(aes(color = Time), stat = "identity") +
+  geom_point(aes(color = Time), stat = "identity") +
+  geom_line(data = kinkajou_counts, stat = "identity", linetype = "dashed") +
+  geom_point(data = kinkajou_counts, stat = "identity") +
+  theme_classic() +
+  scale_color_discrete(name = "Flower Count") +
+  labs(title = "Growth in Minutes per Hour Kinkajous spend in a balsa crown (black dotted) \n and balsa flower counts (solid) over study period",
+       y = "Growth (%)",
+       x = "Study Night")
+```
+
+```{r analysis_by_region}
+flower_counts_region <- all_upflowers %>% group_by(Study_night, Time, Region) %>% summarise(Count = n()) %>% group_by(Region) %>% group_modify(~ transform(.x, Growth = get_growth_index(Count)))
+kinkajou_counts_region <- all_kinkajou_scans_long %>% group_by(Study_night, Region) %>% summarise(Minutes_Per_Hour = get_kinkMinutesPerHour(Count, categories = 2)) %>% group_by(Region) %>% group_modify(~ transform(.x, Growth = get_growth_index(Minutes_Per_Hour)))
+
+ggplot(flower_counts_region, aes(x = Study_night, y = Count, color = Region, linetype = Time)) + geom_line(stat = "identity") + geom_point(stat = "identity") +
+  theme_classic() +
+  labs(title = "Flower Counts by Region")
+
+ggplot(kinkajou_counts_region, aes(x = Study_night, y = Minutes_Per_Hour, color = Region)) + geom_line(stat = "identity") + geom_point(stat = "identity") +
+  theme_classic() +
+  labs(title = "Time Spent by Kinkajous in Region")
+
+ggplot(flower_counts_region, aes(x = Study_night, y = Growth)) + geom_line(aes(linetype = Time), color = "green", stat = "identity") + geom_point(stat = "identity", color = "green", aes(color = "green")) +
+  geom_line(data = kinkajou_counts_region, aes(color = "black")) + geom_point(data = kinkajou_counts_region, color = "black") +
+  theme_classic() + 
+  facet_wrap(~Region, labeller = "label_both") +
+  scale_color_manual(name = "", values = c("Flower Count" = "green", "Kinkajou Minutes Per Hour" = "black")) +
+  labs(title = "Growth in Minutes per Hour Kinkajous spend in a balsa crown (black dotted) \n and balsa flower counts (solid) over study period",
+       y = "Growth (%)",
+       x = "Study Night")
+```
 
