@@ -8,13 +8,14 @@ output:
 ---
 
 ```{r, setup, include=FALSE}
-knitr::opts_knit$set(root.dir = 'C:/Users/Nele/Documents/GitHub/Balsa_Spatial_Analysis')
+knitr::opts_knit$set(root.dir = 'C:/Users/avining/Documents/Balsa_Spatial_Analysis')
 library(tidyverse)
 library(lubridate)
 library(sf)
 library(dplyr)
 library(ggplot2)
 library(scales)
+library(nlme)
 ```
 
 ```{r helper_functions}
@@ -51,6 +52,7 @@ get_growth_index <- function(time_series) {
 file_names <- dir("./DATA/raw/Kinkajou_Scans_Nele", pattern = ".csv")
 
 video_metadata_location <- "./DATA/raw/Video_metadata/video_file_timestamp_metadata_cam1.txt"
+dir()
 video_metadata <- readChar(con = video_metadata_location, nchars = file.info(video_metadata_location)$size)
 video_metadata <- str_split(video_metadata, pattern = "Folder: ")[[1]][-1] #break all metadata into strings for each observation period (and remove preceding empty character)
 video_metadata <- str_split(video_metadata, pattern =  "start = ") #find the start time of all files
@@ -150,6 +152,7 @@ ggplot(all_kinkajou_scans_long, aes(x = Study_night, y = Count)) + stat_summary(
   
 flower_counts <- all_upflowers %>% group_by(Study_night, Time) %>% summarise(Count = n()) %>% transform(Growth = get_growth_index(Count))
 kinkajou_counts <- all_kinkajou_scans_long %>% group_by(Study_night) %>% summarise(Minutes_Per_Hour = get_kinkMinutesPerHour(Count)) %>% transform(Growth = get_growth_index(Minutes_Per_Hour))
+combined_data <- merge(flower_counts, kinkajou_counts, by = "Study_night", all = TRUE)
 
 ggplot(flower_counts, aes(x = Study_night, y = Growth)) + 
   geom_line(aes(color = Time), stat = "identity") +
@@ -225,6 +228,26 @@ paste("mean kinkajou residence in the entire tree, minutes per hour", mean_resid
       "standard deviation of kinkajou residence in entire tree, minutes per hour", var_residence,
       "mean flower count in entire tree by day", mean_flowers_counts,
       "standard deviation of mean flower count in entire tree by day", var_flower_counts, sep=" ")
+```
+
+```{r regression analysis}
+#predicting flower counts based on study night
+flower_count_all_regression <- lm(data = select(as.data.frame(flower_counts), !geom), formula = Count ~ Study_night)
+summary(flower_count_all_regression)
+flower_count_all_regression
+plot(x = flower_counts$Study_night, y = flower_count_all_regression$residuals)
+flower_count_all_regression$effects
+
+plot(y = predict(flower_count_all_regression, newdata = data.frame(Study_night = 0:max(flower_counts$Study_night))), x = 0:max(flower_counts$Study_night), type = "l")
+points(x = flower_counts$Study_night, y = flower_counts$Count)
+
+#predicting kinkajou residence time based on study night and flower count
+residence_time_all_regression <- lm(data = combined_data, formula = Minutes_Per_Hour ~ Study_night + Count)
+summary(residence_time_all_regression)
+
+Sres <- sqrt(sum(residence_time_all_regression$residuals ^ 2)/(length(residence_time_all_regression$residuals) - 2))
+plot(residence_time_all_regression$residuals)
+qqnorm(residence_time_all_regression$residuals/Sres)
 ```
 
 
