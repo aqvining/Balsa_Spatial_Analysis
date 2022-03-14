@@ -8,7 +8,7 @@ output:
 ---
 
 ```{r, setup, include=FALSE}
-knitr::opts_knit$set(root.dir = 'C:/Users/avining/ownCloud/Alexanders_Dissertation/6. Crown Complexity')
+knitr::opts_knit$set(root.dir = 'C:/Users/Nele/Documents/GitHub/Balsa_Spatial_Analysis')
 library(tidyverse)
 library(lubridate)
 library(sf)
@@ -198,4 +198,35 @@ ggplot(flower_counts_region, aes(x = Study_night, y = Growth)) + geom_line(aes(l
        y = "Growth (%)",
        x = "Study Night")
 ```
+
+```{r summary statistics}
+#means and standard deviation of kinkajou movement
+mean_residence <- mean(kinkajou_counts$Minutes_Per_Hour)
+var_residence <- sd(kinkajou_counts$Minutes_Per_Hour)
+mean_residence_by_region <- group_by(kinkajou_counts_region, Region) %>% dplyr::summarise(Mean = mean(Minutes_Per_Hour), Standard_Deviation =sd(Minutes_Per_Hour))
+mean_residence_by_region$Region <- mean_residence_by_region$Region %>% as.character()
+mean_residence_by_region <- mean_residence_by_region %>% rbind(c("all", mean_residence, var_residence))
+mean_residence_by_region$Units <- "minutes per hour"
+mean_residence_by_region
+
+#means and standard deaviation of balsa flower
+mean_flowers_counts <- mean (flower_counts$Count)
+var_flower_counts <- sd(flower_counts$Count)
+mean_flower_counts_by_region <- group_by(flower_counts_region, Region) %>% summarise(Mean = mean (Count), Standard_Deviation = sd (Count))
+mean_flower_counts_by_region$Region <- mean_flower_counts_by_region$Region %>% as.character()
+mean_flower_counts_by_region <- mean_flower_counts_by_region %>% rbind(c("all", mean_flowers_counts, var_flower_counts))
+mean_flower_counts_by_region$Units <- "Flowers"
+mean_flower_counts_by_region
+
+combined_summary_statistics <- rbind(mean_residence_by_region, mean_flower_counts_by_region)
+combined_summary_statistics
+
+paste("mean kinkajou residence in the entire tree, minutes per hour", mean_residence, 
+      "standard deviation of kinkajou residence in entire tree, minutes per hour", var_residence,
+      "mean flower count in entire tree by day", mean_flowers_counts,
+      "standard deviation of mean flower count in entire tree by day", var_flower_counts, sep=" ")
+```
+
+
+
 
