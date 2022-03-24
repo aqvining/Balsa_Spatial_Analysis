@@ -8,7 +8,7 @@ output:
 ---
 
 ```{r, setup, include=FALSE}
-knitr::opts_knit$set(root.dir = 'C:/Users/avining/Documents/Balsa_Spatial_Analysis')
+knitr::opts_knit$set(root.dir = 'C:\\Users\\avining\\Documents\\Balsa_Spatial_Analysis')
 library(tidyverse)
 library(lubridate)
 library(sf)
@@ -231,25 +231,115 @@ paste("mean kinkajou residence in the entire tree, minutes per hour", mean_resid
 ```
 
 ```{r regression analysis}
+
 #predicting flower counts based on study night
 flower_count_all_regression <- lm(data = select(as.data.frame(flower_counts), !geom), formula = Count ~ Study_night)
 summary(flower_count_all_regression)
 flower_count_all_regression
+
+plot(y = predict(flower_count_all_regression, newdata = data.frame(Study_night = 0:max(flower_counts$Study_night))), x = 0:max(flower_counts$Study_night), type = "l",
+     xlab = "Study Night",
+     ylab = "Flower Count",
+     main = "Full Tree Flower Count Regression")
+points(x = flower_counts$Study_night, y = flower_counts$Count)
+
 plot(x = flower_counts$Study_night, y = flower_count_all_regression$residuals)
 flower_count_all_regression$effects
 
-plot(y = predict(flower_count_all_regression, newdata = data.frame(Study_night = 0:max(flower_counts$Study_night))), x = 0:max(flower_counts$Study_night), type = "l")
-points(x = flower_counts$Study_night, y = flower_counts$Count)
+Sflower_all <- sqrt(sum(flower_count_all_regression$residuals ^ 2)/(length(flower_count_all_regression$residuals) - 2))
+qqnorm(flower_count_all_regression$residuals/Sflower_all)
 
 #predicting kinkajou residence time based on study night and flower count
-residence_time_all_regression <- lm(data = combined_data, formula = Minutes_Per_Hour ~ Study_night + Count)
-summary(residence_time_all_regression)
 
-Sres <- sqrt(sum(residence_time_all_regression$residuals ^ 2)/(length(residence_time_all_regression$residuals) - 2))
-plot(residence_time_all_regression$residuals)
-qqnorm(residence_time_all_regression$residuals/Sres)
+#combined_data_cleaned %>% group_by(Study_night) %>% summarize(Count = mean(Count), Minutes_Per_Hour = mean(Minutes_Per_Hour))
+residence_all_regression <- lm(data = combined_data, formula = Minutes_Per_Hour ~ Study_night + Count)
+summary(residence_all_regression)
+
+Sres_all <- sqrt(sum(residence_all_regression$residuals ^ 2)/(length(residence_all_regression$residuals) - 2))
+plot(residence_all_regression$residuals)
+qqnorm(residence_all_regression$residuals/Sres_all)
 ```
 
+```{r flower count regression analysis by region}
+
+# using filter function to create new flower data subsets
+flower_counts_region1 <- filter(flower_counts_region, Region == 1) %>% as.data.frame() %>% select(!geom)
+flower_counts_region2 <- filter(flower_counts_region, Region == 2) %>% as.data.frame() %>% select(!geom)
+flower_counts_region3 <- filter(flower_counts_region, Region == 3) %>% as.data.frame() %>% select(!geom)
+
+#predicting flower counts within the regions based on study night
+
+# linear regression flower count region 1
+flower_count_region1_regression <- lm(data = flower_counts_region1, formula = Count ~ Study_night)
+summary(flower_count_region1_regression)
+
+plot(y = predict(flower_count_region1_regression, newdata = data.frame(Study_night = 0:max(flower_counts_region1$Study_night))), x = 0:max(flower_counts_region1$Study_night), type = "l")
+points(x = flower_counts_region1$Study_night, y = flower_counts_region1$Count)
+
+plot(x = flower_counts_region1$Study_night, y = flower_count_region1_regression$residuals)
+
+Sflower_region1 <- sqrt(sum(flower_count_region1_regression$residuals ^ 2)/(length(flower_count_region1_regression$residuals) - 2))
+qqnorm(flower_count_region1_regression$residuals/Sflower_region1)
+
+# linear regression flower count region 2
+flower_count_region2_regression <- lm(data = flower_counts_region2, formula = Count ~ Study_night)
+summary(flower_count_region2_regression)
+
+plot(y = predict(flower_count_region2_regression, newdata = data.frame(Study_night = 0:max(flower_counts_region2$Study_night))), x = 0:max(flower_counts_region2$Study_night), type = "l")
+points(x = flower_counts_region2$Study_night, y = flower_counts_region2$Count)
+
+plot(x = flower_counts_region2$Study_night, y = flower_count_region2_regression$residuals)
+
+Sflower_region2 <- sqrt(sum(flower_count_region2_regression$residuals ^ 2)/(length(flower_count_region2_regression$residuals) - 2))
+qqnorm(flower_count_region2_regression$residuals/Sflower_region2)
+
+# linear regression flower count region 3
+flower_count_region3_regression <- lm(data = flower_counts_region3, formula = Count ~ Study_night)
+summary(flower_count_region3_regression)
+
+plot(y = predict(flower_count_region3_regression, newdata = data.frame(Study_night = 0:max(flower_counts_region3$Study_night))), x = 0:max(flower_counts_region3$Study_night), type = "l")
+points(x = flower_counts_region3$Study_night, y = flower_counts_region3$Count)
+
+plot(x = flower_counts_region3$Study_night, y = flower_count_region3_regression$residuals)
+
+Sflower_region3 <- sqrt(sum(flower_count_region3_regression$residuals ^ 2)/(length(flower_count_region3_regression$residuals) - 2))
+qqnorm(flower_count_region3_regression$residuals/Sflower_region3)
+```
+
+```{r residence regression analysis by region}
+
+#predicting kinkajou residence time based on study night and flower count
+
+# combining flower count and residence data containing the regions
+combined_data_region <- merge(flower_counts_region, kinkajou_counts_region, by = c("Study_night","Region") , all = TRUE)
+R1_data <- filter(combined_data_region, Region == 1)
+
+#linear regression residence time region 1
+residence_region1_regression <- lm(data = R1_data, formula = Minutes_Per_Hour ~ Study_night + Count)
+summary(residence_region1_regression)
+R1_Predictions <- predict(residence_region1_regression, newdata = select(R1_data, Count, Study_night))
+plot(x = filter(combined_data_region, Region == 1)$Study_night, y = filter(combined_data_region, Region == 1)$Minutes_Per_Hour, xlab = "Study Night", ylab = "Residence Time", main = "Region 1 Regression") #plot actual residences times by night
+lines(x = filter(combined_data_region, Region == 1)$Study_night, y = R1_Predictions
+
+Sres_region1 <- sqrt(sum(residence_region1_regression$residuals ^ 2)/(length(residence_region1_regression$residuals) - 2))
+plot(residence_region1_regression$residuals)
+qqnorm(residence_region1_regression$residuals/Sres_region1)
 
 
 
+#linear regression residence time region 2
+residence_region2_regression <- lm(data = filter(combined_data_region, Region == 2), formula = Minutes_Per_Hour ~ Study_night + Count)
+summary(residence_region2_regression)
+
+Sres_region2 <- sqrt(sum(residence_region2_regression$residuals ^ 2)/(length(residence_region2_regression$residuals) - 2))
+plot(residence_region2_regression$residuals)
+qqnorm(residence_region2_regression$residuals/Sres_region2)
+
+#linear regression residence time region 3
+residence_region3_regression <- lm(data = filter(combined_data_region, Region == 3), formula = Minutes_Per_Hour ~ Study_night + Count)
+summary(residence_region3_regression)
+
+Sres_region3 <- sqrt(sum(residence_region3_regression$residuals ^ 2)/(length(residence_region3_regression$residuals) - 2))
+plot(residence_region3_regression$residuals)
+qqnorm(residence_region3_regression$residuals/Sres_region3)
+```
