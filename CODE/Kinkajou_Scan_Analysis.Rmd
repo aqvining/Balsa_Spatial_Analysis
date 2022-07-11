@@ -7,6 +7,14 @@ output:
   pdf_document: default
 ---
 
+The analysis in this document seeks to answer the question "What factors influence the movements of kinkajous within the crown of a balsa tree?". We start with a few hypotheses:
+
+1. Kinkajous prefer to forage in regions of the tree crown with greater densities of flowers
+2. Kinkajous asses the density of flowers within a region through perception and/or sampling effort.
+3. Kinkajous predict which regions will have more flowers using information obtained from foraging on previous nights
+4. Kinkajous will avoid direct foraging competition with other kinkajous
+5. Kinkajous remember where they have been recently and avoid foraging in recently depleted regions
+
 ```{r, setup, include=FALSE}
 knitr::opts_knit$set(root.dir = 'C:\\Users\\Nele\\Documents\\GitHub\\Balsa_Spatial_Analysis')
 library(tidyverse)
