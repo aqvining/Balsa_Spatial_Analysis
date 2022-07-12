@@ -7,16 +7,23 @@ output:
   pdf_document: default
 ---
 
+# Overview
+
 The analysis in this document seeks to answer the question "What factors influence the movements of kinkajous within the crown of a balsa tree?". We start with a few hypotheses:
 
-1. Kinkajous prefer to forage in regions of the tree crown with greater densities of flowers
-2. Kinkajous asses the density of flowers within a region through perception and/or sampling effort.
-3. Kinkajous predict which regions will have more flowers using information obtained from foraging on previous nights
-4. Kinkajous will avoid direct foraging competition with other kinkajous
-5. Kinkajous remember where they have been recently and avoid foraging in recently depleted regions
+A. Kinkajous prefer to forage in regions with greater densities of flowers
+B. Kinkajous assess the density of flowers within a region through perception and/or sampling effort.
+C. Kinkajous predict which regions will have more flowers using information obtained from foraging on previous nights
+D. Kinkajous will avoid direct foraging competition with other kinkajous
+E. Kinkajous remember where they have been and avoid foraging in recently depleted regions
+
+To test these hypotheses, we collected data on the location of flowers within a balsa tree crown each night, and the locations of kinkajous within that crown every minute for four-hour periods. In order to conduct a spatial analysis, we divided the tree crown into three regions. As best as possible, these regions divided the crown such that all the offshoots of one or more primary branches were contained within a single region. We then tested how the spatio-temporal distribution of flowers within these regions related to the residence times of kinkajous within each region, and to the transitions of kinkajous between regions.
+
+In this document, we 1) prepare and clean the data, 2) Develop predictions about the relationships between flower counts, kinkajou presence, and kinajous movements within and between regions, 3) visualize these relationships, and 4) Develop and run statistical models to test predictions that appear to be supported by patterns in the data.
+
+# Data Setup
 
 ```{r, setup, include=FALSE}
-knitr::opts_knit$set(root.dir = 'C:\\Users\\Nele\\Documents\\GitHub\\Balsa_Spatial_Analysis')
 library(tidyverse)
 library(lubridate)
 library(sf)
@@ -26,7 +33,7 @@ library(scales)
 library(nlme)
 ```
 
-```{r helper_functions}
+```{r helper_functions, include=FALSE}
 get_study_day_and_time <- function(Datetime_string, study_start) {
   #study start must include the approximate start time of evening observations if overnight follows are to be binned into the correct study day
   datetime_vector <- strsplit(Datetime_string, split = "")[[1]]
@@ -56,11 +63,20 @@ get_growth_index <- function(time_series) {
 }
 ```
 
-```{r data_load, message = FALSE}
-file_names <- dir("./DATA/raw/Kinkajou_Scans_Nele", pattern = ".csv")
+The data used for this analysis come from two sources: side-angle thermal video recordings of the balsa tree and top-down photographs of the tree captured by drone.
 
-video_metadata_location <- "./DATA/raw/Video_metadata/video_file_timestamp_metadata_cam1.txt"
-dir()
+## Thermal Video Data Processing and Kinkajou Counts
+
+The thermal videos are of the full balsa tree crown, recorded from the side. Most recordings were four hours, except where interrupted by rain. Recordings had outlines of the regions superimposed by Alexander Vining (using the software ProCreate), who observed the balsa tree in person during all recordings. Because these files are large, they are not included in this repository. Instead, the data included here are the number of kinkajous in each region for each minute of a recording. These data are contained in the folder Kinkajou_Scans_Nele. The counts were determined by Nele Stockmeyer, who watched all of the thermal videos and scanned the tree each minute. Kinkajou counts are further annoted by the number of counted kinkajous that were not visible during the given scan, but their presence was inferred from other scans ("hidden").  Further details on the data collection process are contained in the manuscript ". . ."
+
+In addition to the kinkajou counts, which are annotated by video-minutes, the file video_file_timestamp_metdata_cam1 contains the start and end timestamps of each video. These allow conversion of video-minutes to timestamps. 
+
+We begin data preparation by determining the file names for all of the kinkajous count scan data, for which there is one .csv file per night of recording. We also parse the metadata file to store the start timestamps in a vector. We then read in each kinkajous count scan data file, convert the video-minutes to timestamps, and collect all of the data into a single dataframe.
+
+```{r data_load, message = FALSE}
+file_names <- dir("../DATA/raw/Kinkajou_Scans_Nele", pattern = ".csv")
+
+video_metadata_location <- "../DATA/raw/Video_metadata/video_file_timestamp_metadata_cam1.txt"
 video_metadata <- readChar(con = video_metadata_location, nchars = file.info(video_metadata_location)$size)
 video_metadata <- str_split(video_metadata, pattern = "Folder: ")[[1]][-1] #break all metadata into strings for each observation period (and remove preceding empty character)
 video_metadata <- str_split(video_metadata, pattern =  "start = ") #find the start time of all files
@@ -73,8 +89,8 @@ all_kinkajou_scans <-  c()
 Jan_22_check = FALSE #used later to parse two video files that started on the same day (one AM one PM)
 
 for(file_name in file_names) {
-  scan_data <- read_csv(paste("./DATA/raw/Kinkajou_Scans_Nele/", file_name, sep = ""), skip = 1, progress = FALSE)
-  colnames(scan_data) <- c("timestamp", "Region1_visible", "Region1_hidden", "Region2_visible", "Region2_hidden", "Region3_visible", "Region3_hidden", "Kinkajou_Notes", "Video_Notes", "Extraneous")
+  scan_data <- read_csv(paste("../DATA/raw/Kinkajou_Scans_Nele/", file_name, sep = ""), skip = 1, progress = FALSE)
+  colnames(scan_data) <- c("timestamp", "Region1_total", "Region1_hidden", "Region2_total", "Region2_hidden", "Region3_total", "Region3_hidden", "Kinkajou_Notes", "Video_Notes", "Extraneous")
   scan_data <- scan_data[complete.cases(scan_data$timestamp),] %>% select(! Extraneous)
   start_date <- str_split(file_name ,pattern = "_Cam")[[1]][1] #str_split returns a list of string components. We want the first (and only) element of this list - then the first string element in this list gives the date
   start_date <- as.POSIXct(paste("20", start_date, sep = ""), format = "%Y_%m_%d") #date needs all 4 digits
@@ -92,16 +108,17 @@ for(file_name in file_names) {
 }
 ```
 
-
+We continue preparing the kinkajous count data by converting the data from a) total kinkajous per region and b) hidden kinkajous per region to a) visible kinkajous per region and b) hidden kinkajous per region. This makes analysis using either type of count separately easier.
 
 ```{r data_prep}
 #convert empty count cells (NAs) to 0
-count_data <- all_kinkajou_scans[,2:7] # columns 2 through 7 are the count data columns, we want NAs in the notes columns
+count_data <- all_kinkajou_scans[,2:7] # columns 2 through 7 are the count data columns, we want NAs in the notes columns, but 0s in the count data
 count_data[is.na(count_data)] <- 0
 all_kinkajou_scans[,2:7] <- count_data
 
 #The data as read contain the TOTAL number of kinkajous and the number of those total that are hidden. As suggested by the new names given to the columns in this data structure, we want the count of visible and hidden kinkajous, not the total. The adjustment is made below
-all_kinkajou_scans <- mutate(all_kinkajou_scans, Region1_visible = Region1_visible - Region1_hidden, Region2_visible = Region2_visible - Region2_hidden, Region3_visible = Region3_visible - Region3_hidden)
+all_kinkajou_scans <- mutate(all_kinkajou_scans, Region1_visible = Region1_total - Region1_hidden, Region2_visible = Region2_total - Region2_hidden, Region3_visible = Region3_total - Region3_hidden) %>% 
+  select(timestamp, Region1_total, Region2_total, Region3_total, Region1_visible, Region1_hidden, Region2_visible, Region2_hidden, Region3_visible, Region3_hidden, Study_night, Kinkajou_Notes, Video_Notes)
 
 #pivot dataframe to long format for easy usage in ggplot
 all_kinkajou_scans_long <- pivot_longer(all_kinkajou_scans,
@@ -112,26 +129,23 @@ all_kinkajou_scans_long <- pivot_longer(all_kinkajou_scans,
 
 all_kinkajou_scans_long$Region <- sapply(all_kinkajou_scans_long$Region, switch, "Region1" = "1", "Region2" = "2", "Region3" = "3") %>% factor()
 
-write.csv(all_kinkajou_scans_long, "./DATA/processed/all_kinkajou_scans.csv")
+write.csv(all_kinkajou_scans_long, "../DATA/processed/all_kinkajou_scans.csv")
 ```
 
-```{r data_visuals}
-#We create a series of plots with increasing complexity as a demonstration of building visualizatins in ggplot
-plot_data <- ggplot(all_kinkajou_scans_long)
+In addition to the counts of kinkajous in each region, we are interested in how kinkajous transitions between region. Thus, we use the count data to create a transition matrix for each scan, where the number in each cell denotes how many kinkajous moved from the region denoted by the row to the region denoted by the column. These transitions matrices are collated into an array for each study night, where the third dimension is the scan (video-minute). The arrays for each night are stored in a list.
 
-plot_data + geom_col(aes(x = Region, y = Count))
+## Drone Image Processing and Flower Counts
 
-ggplot(all_kinkajou_scans_long) +
-  geom_col(aes(x = Region, y = Count, fill = Visibility)) +
-  facet_wrap(~Study_night)
-```
+The second source of data are orthomosiac images of the balsa crown created by stitching together 100 images taken sequentially by a drone flying over the balsa tree. Because, again, these files are large, the data contained in this repository are geopackages containing WGS 84 locations and tree crown region of each flower in the crown. These data were extracted by first stitching together the drone photos from each flight into an orthmosaic (speak to Andreas about details). Second, Alexander Vining used the software QGIS to align each orthomosiac with Google satellite imagery of the study site and hand-delinieate the three regions of the tree crown. Finally, Nele Stockmeyer created spatial points for each flower in the orthomosaic, noting whether the flower appeared to upright or fallen over.
+
+The following script extracts the spatial coordinates and regions from the geopackage files and stores them as an spatial features (sf) object, with additinal annotation for the date and time of the images from which data were collected.
 
 ```{r load_balsa_data, message = FALSE}
-files = strsplit(dir("./DATA/raw/Flower_geopackages"), split = "[.]") #seperate filenames from extensions for all files in folder
+files = strsplit(dir("../DATA/raw/Flower_geopackages"), split = "[.]") #seperate filenames from extensions for all files in folder
 files = files[sapply(files, function(X) X[2] == "gpkg")] #reduce file list only to gpkg files
 geopackages <- vector("list", length = length(files))
 for(i in seq_along(files)){
-  flower_sf <- st_read(paste("./DATA/raw/Flower_geopackages/", files[[i]][1], ".", files[[i]][2], sep = ""), quiet = TRUE)
+  flower_sf <- st_read(paste("../DATA/raw/Flower_geopackages/", files[[i]][1], ".", files[[i]][2], sep = ""), quiet = TRUE)
   flower_sf$Region <- strsplit(files[[i]][1], split = NULL)[[1]] %>% last() %>% as.numeric() + 1 #QGIS labelled regioning grouping outputs at 0 (last element of savefile string); add one to get region labels that match kinkajou data
   flower_sf$Date <- strsplit(files[[i]][1], split = "_")[[1]][2]
   geopackages[[i]] <- flower_sf
@@ -144,6 +158,27 @@ all_upflowers <- all_upflowers %>% mutate(Study_night = sapply(Date, function(X)
                                           Time = factor(sapply(Date, function(X) get_study_day_and_time(X, study_start= as.POSIXct("2019-12-14 18:00:00", tz = "America/Panama")) [[2]])))
 
 ```
+
+# Data Visualization
+
+With the data prepared, we visualize spatio-temporal patterns of both flowers and kinkajous within the tree-crown as a whole and within regions of the tree crown. Based on our hypotheses, we made some predictions about patterns we expected to see
+
+
+```{r data_visuals1}
+plot_data <- ggplot(all_kinkajou_scans_long)
+
+plot_data + 
+  geom_bar(aes(x = Region, weight = Count)) + 
+  facet_wrap(~Study_night) +
+  theme_classic() +
+  labs(y = "Kinkajous-Minutes")
+
+ggplot(all_kinkajou_scans_long) +
+  geom_bar(aes(x = Region, weight = Count, fill = Visibility)) +
+  facet_wrap(~Study_night)
+```
+
+
 
 ```{r viz_by_day}
 ggplot(all_upflowers, aes(x = Study_night, color = Time)) + geom_line(stat = "count") + geom_point(stat = "count") +
