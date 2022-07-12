@@ -134,6 +134,39 @@ write.csv(all_kinkajou_scans_long, "../DATA/processed/all_kinkajou_scans.csv")
 
 In addition to the counts of kinkajous in each region, we are interested in how kinkajous transitions between region. Thus, we use the count data to create a transition matrix for each scan, where the number in each cell denotes how many kinkajous moved from the region denoted by the row to the region denoted by the column. These transitions matrices are collated into an array for each study night, where the third dimension is the scan (video-minute). The arrays for each night are stored in a list.
 
+```{r Get_transitions}
+
+get_transitions <- function(count_data){
+  #input: a dataframe with columns "Region1_total", "Region2_total", "Region3_total" and (optionally) "timestamp".
+  #output: an array giving the number of transitions from one region (first dimension) to another (second dimension) for each minute (row) of the input data (third dimension)
+  transitions <- array(data = 0, dim = c(4,4,nrow(count_data)))
+  if("timestamp" %in% colnames(count_data)) arrange(count_data, timestamp)
+  count_data <- select(count_data, Region1_total, Region2_total, Region3_total)
+  for(i in 2:nrow(count_data)){
+    #to calculate the transition matrix, we treat the counts in the previous timestep as the row totals of the transition matrix
+    row_totals <- c(unlist(count_data[i-1,]),
+                    max(sum(count_data[i,]) - sum(count_data[i -1,]), 0)) #create a fourth row total for kinkajous entering the tree by differencing the total kinkajou counts of the current timestep and the previous timestep, counting only positive differences.
+    #we then treat the counts in the current timestep as the column totals in the transition matrix
+    col_totals <- c(unlist(count_data[i,]),
+                    max(sum(count_data[i-1,]) - sum(count_data[i,]), 0)) #create a fourth column total for kinkajous leaving the tree
+    for(j in seq_along(row_totals)){
+      for(k in seq_along(col_totals)){
+        m <- min(row_totals[j], col_totals[k]) #m is the maximum number of transitions that can contribute to both the relevant row total and column total
+        transitions[j,k,i] <- m
+        row_totals[j] <- row_totals[j] - m #subtract the number of transitions that have been added from the corresponding row total
+        col_totals[k] <- col_totals[k] - m #subtract the number of transitions that have been added from the corresponding column total
+      }
+    }
+  }
+  return(transitions)
+}
+
+transition_arrays <- all_kinkajou_scans %>% group_by(Study_night) %>% group_map(~get_transitions(.x))
+names(transition_arrays) <- as.character(unique(all_kinkajou_scans$Study_night))
+```
+
+Because 
+
 ## Drone Image Processing and Flower Counts
 
 The second source of data are orthomosiac images of the balsa crown created by stitching together 100 images taken sequentially by a drone flying over the balsa tree. Because, again, these files are large, the data contained in this repository are geopackages containing WGS 84 locations and tree crown region of each flower in the crown. These data were extracted by first stitching together the drone photos from each flight into an orthmosaic (speak to Andreas about details). Second, Alexander Vining used the software QGIS to align each orthomosiac with Google satellite imagery of the study site and hand-delinieate the three regions of the tree crown. Finally, Nele Stockmeyer created spatial points for each flower in the orthomosaic, noting whether the flower appeared to upright or fallen over.
