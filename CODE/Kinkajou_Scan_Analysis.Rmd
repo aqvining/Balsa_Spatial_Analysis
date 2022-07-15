@@ -19,7 +19,7 @@ E. Kinkajous remember where they have been and avoid foraging in recently deplet
 
 To test these hypotheses, we collected data on the location of flowers within a balsa tree crown each night, and the locations of kinkajous within that crown every minute for four-hour periods. In order to conduct a spatial analysis, we divided the tree crown into three regions. As best as possible, these regions divided the crown such that all the offshoots of one or more primary branches were contained within a single region. We then tested how the spatio-temporal distribution of flowers within these regions related to the residence times of kinkajous within each region, and to the transitions of kinkajous between regions.
 
-In this document, we 1) prepare and clean the data, 2) Develop predictions about the relationships between flower counts, kinkajou presence, and kinajous movements within and between regions, 3) visualize these relationships, and 4) Develop and run statistical models to test predictions that appear to be supported by patterns in the data.
+In this document, we 1) prepare and clean the data, 2) Develop predictions about the relationships between flower counts, kinkajou presence, and kinajous movements within and between regions, 3) visualize these relationships, and 4) develop and run statistical models to test predictions that appear to be supported by patterns in the data.
 
 # Data Setup
 
@@ -67,11 +67,11 @@ The data used for this analysis come from two sources: side-angle thermal video 
 
 ## Thermal Video Data Processing and Kinkajou Counts
 
-The thermal videos are of the full balsa tree crown, recorded from the side. Most recordings were four hours, except where interrupted by rain. Recordings had outlines of the regions superimposed by Alexander Vining (using the software ProCreate), who observed the balsa tree in person during all recordings. Because these files are large, they are not included in this repository. Instead, the data included here are the number of kinkajous in each region for each minute of a recording. These data are contained in the folder Kinkajou_Scans_Nele. The counts were determined by Nele Stockmeyer, who watched all of the thermal videos and scanned the tree each minute. Kinkajou counts are further annoted by the number of counted kinkajous that were not visible during the given scan, but their presence was inferred from other scans ("hidden").  Further details on the data collection process are contained in the manuscript ". . ."
+The thermal videos are of the full balsa tree crown, recorded from the side. Most recordings were four hours, except where interrupted by rain. Recordings had outlines of the regions superimposed by Alexander Vining (using the software ProCreate), who previously diagrammed the full tree and observed kinkajous in the tree during all recordings. Because these files are large, they are not included in this repository. Instead, the data included here are the number of kinkajous in each region for each minute of a recording. These data are contained in the folder Kinkajou_Scans_Nele. The counts were determined by Nele Stockmeyer, who watched all of the thermal videos and scanned the tree each minute. Kinkajou counts are further annotated by the number of counted kinkajous that were not visible during the given scan, but their presence was inferred from other scans ("hidden").  Further details on the data collection process are contained in the manuscript ". . ."
 
 In addition to the kinkajou counts, which are annotated by video-minutes, the file video_file_timestamp_metdata_cam1 contains the start and end timestamps of each video. These allow conversion of video-minutes to timestamps. 
 
-We begin data preparation by determining the file names for all of the kinkajous count scan data, for which there is one .csv file per night of recording. We also parse the metadata file to store the start timestamps in a vector. We then read in each kinkajous count scan data file, convert the video-minutes to timestamps, and collect all of the data into a single dataframe.
+We begin data preparation by determining the file names for all of the kinkajou count data, for which there is one .csv file per night of recording. We also parse the metadata file to store the start timestamps in a vector. We then read in each kinkajou count data file, convert the video-minutes to timestamps, and collect all of the data into a single dataframe.
 
 ```{r data_load, message = FALSE}
 file_names <- dir("../DATA/raw/Kinkajou_Scans_Nele", pattern = ".csv")
@@ -106,6 +106,8 @@ for(file_name in file_names) {
   scan_data$Study_night <- round(as.numeric(start_timestamp - start_timestamps[1], units = "days"), digits = 0)
   all_kinkajou_scans <- rbind(all_kinkajou_scans, scan_data)
 }
+
+head(all_kinkajou_scans)
 ```
 
 We continue preparing the kinkajous count data by converting the data from a) total kinkajous per region and b) hidden kinkajous per region to a) visible kinkajous per region and b) hidden kinkajous per region. This makes analysis using either type of count separately easier.
@@ -130,6 +132,14 @@ all_kinkajou_scans_long <- pivot_longer(all_kinkajou_scans,
 all_kinkajou_scans_long$Region <- sapply(all_kinkajou_scans_long$Region, switch, "Region1" = "1", "Region2" = "2", "Region3" = "3") %>% factor()
 
 write.csv(all_kinkajou_scans_long, "../DATA/processed/all_kinkajou_scans.csv")
+```
+
+With a quick operation, we also create a table of the total kinkajous-minutes spent in the whole crown and in each region on each night (where two kinkajous counted in the same regions during a scan consititutes two kinkajou-minutes
+)
+```{r nightly_kink_counts}
+kinkajou_counts <- all_kinkajou_scans_long %>% group_by(Study_night) %>% summarise(Minutes_Per_Hour = get_kinkMinutesPerHour(Count)) %>% transform(Growth = get_growth_index(Minutes_Per_Hour))
+
+kinkajou_counts_region <- all_kinkajou_scans_long %>% group_by(Study_night, Region) %>% summarise(Minutes_Per_Hour = get_kinkMinutesPerHour(Count, categories = 2)) %>% group_by(Region) %>% group_modify(~ transform(.x, Growth = get_growth_index(Minutes_Per_Hour)))
 ```
 
 In addition to the counts of kinkajous in each region, we are interested in how kinkajous transitions between region. Thus, we use the count data to create a transition matrix for each scan, where the number in each cell denotes how many kinkajous moved from the region denoted by the row to the region denoted by the column. These transitions matrices are collated into an array for each study night, where the third dimension is the scan (video-minute). The arrays for each night are stored in a list.
@@ -165,13 +175,25 @@ transition_arrays <- all_kinkajou_scans %>% group_by(Study_night) %>% group_map(
 names(transition_arrays) <- as.character(unique(all_kinkajou_scans$Study_night))
 ```
 
-Because 
+Because we only have counts, this method can sometimes be ambiguous when multiple transitions occur. For example, in the transition from row 202 to 203 of Study Night 20, there could either be transitions from 1 to 2 and 4 to 3, or from 1 to 3 and 4 to 2. Our approach will always chose the possibility with the lowest initial numeric combination (eg 1 to 2 instead of 1 to 3.)
+
+Here are the kinkajou counts for these two minutes of Night 20.
+```{r transition_ambiguity_example}
+filter(all_kinkajou_scans, Study_night == 20)[202:203,1:4] #first four columns give timestamp and total counts for each region
+```
+
+And here are the transitions infered by our algorithm. Note that the transition from 2 to 2 represents a kinkajous that did not move.
+
+```{r}
+transition_arrays[["20"]][,,203]
+```
+
 
 ## Drone Image Processing and Flower Counts
 
 The second source of data are orthomosiac images of the balsa crown created by stitching together 100 images taken sequentially by a drone flying over the balsa tree. Because, again, these files are large, the data contained in this repository are geopackages containing WGS 84 locations and tree crown region of each flower in the crown. These data were extracted by first stitching together the drone photos from each flight into an orthmosaic (speak to Andreas about details). Second, Alexander Vining used the software QGIS to align each orthomosiac with Google satellite imagery of the study site and hand-delinieate the three regions of the tree crown. Finally, Nele Stockmeyer created spatial points for each flower in the orthomosaic, noting whether the flower appeared to upright or fallen over.
 
-The following script extracts the spatial coordinates and regions from the geopackage files and stores them as an spatial features (sf) object, with additinal annotation for the date and time of the images from which data were collected.
+The following script extracts the spatial coordinates and regions from the geopackage files and stores them as an spatial features (sf) object, with additional annotation for the date and time of the images from which data were collected. The result looks as such . . .
 
 ```{r load_balsa_data, message = FALSE}
 files = strsplit(dir("../DATA/raw/Flower_geopackages"), split = "[.]") #seperate filenames from extensions for all files in folder
@@ -190,43 +212,19 @@ all_upflowers$Region <- factor(all_upflowers$Region)
 all_upflowers <- all_upflowers %>% mutate(Study_night = sapply(Date, function(X) get_study_day_and_time(X, study_start = as.POSIXct("2019-12-14 18:00:00", tz = "America/Panama"))[[1]]),
                                           Time = factor(sapply(Date, function(X) get_study_day_and_time(X, study_start= as.POSIXct("2019-12-14 18:00:00", tz = "America/Panama")) [[2]])))
 
+print(head(all_upflowers))
 ```
 
-# Data Visualization
+Some of the data in these files come from nights where Nele assed the image quality of the orthomosaic as too poor to accurately count flowers. We remove data from nights marked as such.
 
-With the data prepared, we visualize spatio-temporal patterns of both flowers and kinkajous within the tree-crown as a whole and within regions of the tree crown. Based on our hypotheses, we made some predictions about patterns we expected to see
-
-
-```{r data_visuals1}
-plot_data <- ggplot(all_kinkajou_scans_long)
-
-plot_data + 
-  geom_bar(aes(x = Region, weight = Count)) + 
-  facet_wrap(~Study_night) +
-  theme_classic() +
-  labs(y = "Kinkajous-Minutes")
-
-ggplot(all_kinkajou_scans_long) +
-  geom_bar(aes(x = Region, weight = Count, fill = Visibility)) +
-  facet_wrap(~Study_night)
-```
-
-
-
-```{r viz_by_day}
-ggplot(all_upflowers, aes(x = Study_night, color = Time)) + geom_line(stat = "count") + geom_point(stat = "count") +
-  theme_classic() +
-  labs(title = "Upright Flowers Counted")
-
-ggplot(all_kinkajou_scans_long, aes(x = Study_night, y = Count)) + stat_summary(fun = "get_kinkMinutesPerHour", geom = "line") + stat_summary(fun = "get_kinkMinutesPerHour", geom = "point") +
-  theme_classic() +
-  labs(title = "Time Spent in Crown", y = "Kinkajou Minutes per Hour")
-
+```{r flower count cleaning}
 all_upflowers <- all_upflowers %>% filter(Time == "AM" | !Study_night %in% c(23, 26, 25, 32)) %>% #remove data from images marked in notes as poor quality photos
   filter(Time == "PM" | !Study_night %in% c(20,21)) #remove data from images marked in notes as poor quality photos
+```
 
+Next, we count the flowers in the whole tree on each night and by region. For nights where both drone flights were conducted (AM and PM) and yielded high quality images, we average the two counts.
 
-  
+```{r flower counting}  
 flower_counts <- all_upflowers %>% 
   group_by(Study_night, Time) %>% summarise(Count = n()) %>% 
   mutate(Study_night = Study_night - (Time == "AM")) %>% #study night is based on date, but we want to match AM recordings to previous PM recordins, so we subtract one from all AM study night values
@@ -234,24 +232,86 @@ flower_counts <- all_upflowers %>%
   summarise(Count = mean(Count)) %>% 
   transform(Growth = get_growth_index(Count)) #used to visually compare changes in flower count to changes in kinkajou residency without bias
 
+flower_counts_region <- all_upflowers %>% mutate(Study_night = Study_night - (Time == "AM")) %>% #study night is based on date, but we want to match AM recordings to previous PM recordins, so we subtract one from all AM study night values
+  group_by(Study_night, Region) %>% 
+  summarise(Count = n()) %>% 
+  group_by(Study_night, Region) %>% 
+  mutate(Count = mean(Count)) %>% 
+  group_by(Region) %>% group_modify(~ transform(.x, Growth = get_growth_index(Count))) %>% 
+  ungroup()
+```
 
-kinkajou_counts <- all_kinkajou_scans_long %>% group_by(Study_night) %>% summarise(Minutes_Per_Hour = get_kinkMinutesPerHour(Count)) %>% transform(Growth = get_growth_index(Minutes_Per_Hour))
+
+Lastly, we put all of the nightly kinkajou and flower count data together into a single dataframe so they can be easily visualized jointly.
+```{r combining_data}
 combined_data <- merge(flower_counts, kinkajou_counts, by = "Study_night", all = TRUE)
+```
 
-ggplot(flower_counts, aes(x = Study_night, y = Growth)) + 
-  geom_line(stat = "identity") +
-  geom_point(stat = "identity") +
-  geom_line(data = kinkajou_counts, stat = "identity", linetype = "dashed") +
-  geom_point(data = kinkajou_counts, stat = "identity") +
+# Data Visualization
+
+With the data prepared, we visualize spatio-temporal patterns of both flowers and kinkajous within the tree-crown as a whole and within regions of the tree crown. Based on our hypotheses, we made some predictions about patterns we expected to see.
+
+First, under Hypothesis A (Kinkajous prefer to forage in regions with greater densities of flowers), we predicted that kinkajous would spend more time in the tree crown, as a whole, when overall flower densities were higher. Under the same hypothesis, we predicted that kinkajous would spend more time in regions of the tree with greater flower density, relative to other regions.
+
+## Kinkajous Residence Times
+
+Below, we visualize the kinkajou counts per region, per night, over the course of the study.
+
+Plotting the data in bar charts gives a good sense of the relative time spent in each region by kinkajous. However, these total counts may be influenced by the duration of observations on that night.
+
+```{r kink_counts_bar}
+ggplot(all_kinkajou_scans_long) +
+  geom_bar(aes(x = Region, weight = Count, fill = Visibility)) +
+  facet_wrap(~Study_night) +
   theme_classic() +
-  scale_color_discrete(name = "Flower Count") +
-  labs(title = "Growth in Minutes per Hour Kinkajous spend in a balsa crown (black dotted) \n and balsa flower counts (solid) over study period",
-       y = "Growth (%)",
-       x = "Study Night")
+  labs(y = "Kinkajou Minutes")
+```
+A line plot with study night on the x axis makes clear the periods of time in which observation did not occur. Here, we convert total kinkajou minutes to kinkajou minutes per hour. The data plotted this way highlight temporal trends in overall kinkajou residence in the tree . . .
 
-ggplot(all_upflowers) + geom_sf(aes(color = factor(Date), shape = factor(Region)))
-ggplot(all_upflowers) + geom_bar(aes(x = factor(Region))) + facet_wrap(~Date)
+```{r kinkajou counts line}
+ggplot(all_kinkajou_scans_long, aes(x = Study_night, y = Count)) + stat_summary(fun = "get_kinkMinutesPerHour", geom = "line") + stat_summary(fun = "get_kinkMinutesPerHour", geom = "point") +
+  theme_classic() +
+  labs(title = "Time Spent in Crown", y = "Kinkajou Minutes per Hour")
+```
+ . . . and kinkajou residence times by region
 
+ 
+```{r kink counts region}
+ggplot(kinkajou_counts_region, aes(x = Study_night, y = Minutes_Per_Hour, color = Region)) + geom_line(stat = "identity") + geom_point(stat = "identity") +
+  theme_classic() +
+  labs(title = "Time Spent by Kinkajous in Region", y = "Kinkajou Minutes per Hour")
+```
+
+## Flower Counts
+
+As with Kinkajou Residence Times, we can plot the total number of flowers over study.
+
+We look first at the counts of all drone flights to check that AM and PM flights are loargely in Agreement
+```{r flowers_by_flight}
+ggplot(mutate(all_upflowers, Study_night = Study_night - (Time == "AM")), aes(x = Study_night, color = Time)) + geom_line(stat = "count") + geom_point(stat = "count") +
+  theme_classic() +
+  labs(title = "Upright Flowers Counted")
+```
+
+Then we look at the flower counts after averaging AM and PM scans. First, total counts
+```{r flower Counts Total}
+ggplot(flower_counts, aes(x = Study_night, y = Count)) + 
+  geom_line(stat = "identity") + 
+  geom_point(stat = "identity") +
+  theme_classic() +
+  labs(title = "Flower Counts by Region")
+```
+```{r flower counts region}
+ggplot(flower_counts_region, aes(x = Study_night, y = Count, color = Region)) + geom_line(stat = "identity") + geom_point(stat = "identity") +
+  theme_classic() +
+  labs(title = "Flower Counts by Region")
+```
+
+## Kinkajou Residence-Flower Interactions
+
+To visualize changes in flower counts and kinkajous residence time together, over the course of the study, we use a growth index which gives the percent change in count or residence time relative to the first respective observation. This ensures the scale of both data types remains the same, and allows unbiased visualization of their relationship.
+
+```{r flowers}
 ggplot(flower_counts, aes(x = Study_night, y = Growth)) + 
   geom_line(aes(linetype = "Flower Count"), stat = "identity") +
   geom_point(stat = "identity") +
@@ -264,25 +324,14 @@ ggplot(flower_counts, aes(x = Study_night, y = Growth)) +
        y = "Growth (%)",
        x = "Study Night")
 ```
-
+ In the plot above, we see an increase with flower counts over time. Kinkajou residence on the other hand does not appear to have a trend until it drops off toward the end of the study. This runs counter to our prediction drawn from Hypothesis A that kinkajous would spend more time in the three when there were more flowers. However, we do not have data on the other resources available in the kinkajous environment. Toward the end of our study period, other resources would likely have been coming into season, and thus the balsa tree may have been less attractive relative to other resources in the kinkajous environment, despite the its increasing flower count.
+ 
 ```{r analysis_by_region}
-flower_counts_region <- all_upflowers %>% mutate(Study_night = Study_night - (Time == "AM")) %>% 
-  group_by(Study_night, Region) %>% 
-  summarise(Count = n()) %>% 
-  group_by(Study_night, Region) %>% 
-  mutate(Count = mean(Count)) %>% 
-  group_by(Region) %>% group_modify(~ transform(.x, Growth = get_growth_index(Count))) %>% 
-  ungroup()
 
-kinkajou_counts_region <- all_kinkajou_scans_long %>% group_by(Study_night, Region) %>% summarise(Minutes_Per_Hour = get_kinkMinutesPerHour(Count, categories = 2)) %>% group_by(Region) %>% group_modify(~ transform(.x, Growth = get_growth_index(Minutes_Per_Hour)))
 
-ggplot(flower_counts_region, aes(x = Study_night, y = Count, color = Region)) + geom_line(stat = "identity") + geom_point(stat = "identity") +
-  theme_classic() +
-  labs(title = "Flower Counts by Region")
 
-ggplot(kinkajou_counts_region, aes(x = Study_night, y = Minutes_Per_Hour, color = Region)) + geom_line(stat = "identity") + geom_point(stat = "identity") +
-  theme_classic() +
-  labs(title = "Time Spent by Kinkajous in Region")
+
+
 
 ggplot(flower_counts_region, aes(x = Study_night, y = Growth)) + geom_line(color = "green3", stat = "identity") + geom_point(stat = "identity", color = "green3") +
   geom_line(data = kinkajou_counts_region, aes(color = "black")) + geom_point(data = kinkajou_counts_region, color = "black") +
