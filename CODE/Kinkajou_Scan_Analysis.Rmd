@@ -31,6 +31,7 @@ library(dplyr)
 library(ggplot2)
 library(scales)
 library(nlme)
+library(brms)
 ```
 
 ```{r helper_functions, include=FALSE}
@@ -301,6 +302,8 @@ ggplot(flower_counts, aes(x = Study_night, y = Count)) +
   theme_classic() +
   labs(title = "Flower Counts by Region")
 ```
+And then the counts by region
+
 ```{r flower counts region}
 ggplot(flower_counts_region, aes(x = Study_night, y = Count, color = Region)) + geom_line(stat = "identity") + geom_point(stat = "identity") +
   theme_classic() +
@@ -309,7 +312,7 @@ ggplot(flower_counts_region, aes(x = Study_night, y = Count, color = Region)) + 
 
 ## Kinkajou Residence-Flower Interactions
 
-To visualize changes in flower counts and kinkajous residence time together, over the course of the study, we use a growth index which gives the percent change in count or residence time relative to the first respective observation. This ensures the scale of both data types remains the same, and allows unbiased visualization of their relationship.
+To visualize changes in flower counts and kinkajou residence time together, over the course of the study, we use a growth index which gives the percent change in count or residence time relative to the first respective observation. This ensures the scale of both data types remains the same, and allows unbiased visualization of their relationship.
 
 ```{r flowers}
 ggplot(flower_counts, aes(x = Study_night, y = Growth)) + 
@@ -324,27 +327,23 @@ ggplot(flower_counts, aes(x = Study_night, y = Growth)) +
        y = "Growth (%)",
        x = "Study Night")
 ```
- In the plot above, we see an increase with flower counts over time. Kinkajou residence on the other hand does not appear to have a trend until it drops off toward the end of the study. This runs counter to our prediction drawn from Hypothesis A that kinkajous would spend more time in the three when there were more flowers. However, we do not have data on the other resources available in the kinkajous environment. Toward the end of our study period, other resources would likely have been coming into season, and thus the balsa tree may have been less attractive relative to other resources in the kinkajous environment, despite the its increasing flower count.
+ In the plot above, we see an increase with flower counts over time. Kinkajou residence on the other hand does not appear to have a trend until it drops off toward the end of the study. This runs counter to our prediction drawn from Hypothesis A that kinkajous would spend more time in the three when there were more flowers. However, we do not have data on the other resources available in the kinkajous' environment. Toward the end of our study period, other resources would likely have been coming into season, and thus the balsa tree may have been less attractive relative to other resources in the kinkajous'sd environment, despite the its increasing flower count.
  
 ```{r analysis_by_region}
-
-
-
-
-
-
-ggplot(flower_counts_region, aes(x = Study_night, y = Growth)) + geom_line(color = "green3", stat = "identity") + geom_point(stat = "identity", color = "green3") +
-  geom_line(data = kinkajou_counts_region, aes(color = "black")) + geom_point(data = kinkajou_counts_region, color = "black") +
+#still need to get a legend working on this
+ggplot(flower_counts_region, aes(x = Study_night, y = Growth)) + geom_line(color = "green3", stat = "identity", linetype = "solid") + geom_point(stat = "identity", color = "green3") +
+  geom_line(data = kinkajou_counts_region, linetype = "dashed") + geom_point(data = kinkajou_counts_region, color = "black") +
   theme_classic() + 
   facet_wrap(~Region, labeller = "label_both") +
   theme(legend.position = "bottom") +
-  scale_color_manual(name = "", values = c("Flower Count" = "green3", "Kinkajou Minutes Per Hour" = "black")) +
+  scale_linetype_manual(name = "", values = c("Flower Count" = "solid", "Kinkajou Minutes Per Hour" = "dashed")) +
   labs(#title = "Growth in Minutes per Hour Kinkajous spend in a balsa crown (black) \n and balsa flower counts (solid) over study period",
        y = "Growth (%)",
        x = "Study Night")
 ```
+Looking at flower counts and residence times by regions, there are not any strongly apparent differences in the interaction between balsa flowers and kinkajous.
 
-
+Below, we extract some descriptive statistics for describing some of the patterns in kinkajous residence time and flower counts visualized throughout the plots in this section.
 
 ```{r summary statistics}
 #means and standard deviation of kinkajou movement
@@ -374,28 +373,88 @@ paste("mean kinkajou residence in the entire tree, minutes per hour", mean_resid
       "standard deviation of mean flower count in entire tree by day", var_flower_counts, sep=" ")
 ```
 
-```{r regression analysis}
+# Statistical Analysis
 
-#predicting flower counts based on study night
+## Flower Count by Night
+
+### Frequentist Linear Model
+
+To begin analyzing the important patterns in the data statistically, we first want to isolate the temporal trends in flower count. We start with a simple linear model, which presumes the number of flowers in the tree steadily increases (or decreases) over the course of the study. For now, we fit the model using both a frequentist and Bayesian model, allowing comparison. We expect these models to yield the same results, but later will shift entirely to a bayesian framework, which will be more robust to our small sample size and the non-independance of data (i.e. it should more accurately determine the uncertainty in the model, and thus is less likely to result in false conclusions)
+
+```{r flower linear regression}
+#predicting flower counts based on study night using frequentist methods
 flowers_regression_all <- lm(data = select(as.data.frame(flower_counts), !geom), formula = Count ~ Study_night)
 summary(flowers_regression_all)
-#flowers_regression_all
+```
+We find an intercept of -21.4 in this model, which is clearly biologically implausible (the tree can not have negative flowers), but is reasonable statisitcally given that we did not start collecting data on flowers until day 12, when flowers first began opening. Thus, the model is only fitted to the period when flowers are appearing in the tree, but extends several days before that. Plotting the regression line through the data makes this clear. 
 
+More interestingly, the fixed effect of study night is clearly positive, with an estimated average increase of 4.4 flowers per night of the study.
+
+```{r}
 plot(y = predict(flowers_regression_all, newdata = data.frame(Study_night = 0:max(flower_counts$Study_night))), x = 0:max(flower_counts$Study_night), type = "l",
      xlab = "Study Night",
      ylab = "Flower Count",
      main = "Full Tree Flower Count Regression")
 points(x = flower_counts$Study_night, y = flower_counts$Count)
+```
 
+We can also plot the residuals by night to examine how the model performs over the course of the study. This reveals additional variance toward the end of the study. This unnacounted for structure in the variance is unlikely to strongly affect the assumptions of this linear model, but would be accounted for in a Bayesian approach.
+
+```{r}
 plot(x = flower_counts$Study_night, y = flowers_regression_all$residuals,
      xlab = "Study Night",
      ylab = "Residuals",
      main = "Full Tree Flower Count Residuals")
-flowers_regression_all$effects
+```
 
-Sflower_all <- sqrt(sum(flowers_regression_all$residuals ^ 2)/(length(flowers_regression_all$residuals) - 2))
+The structure of the residuals can be further analyzed by a q-q plot
+
+```{r}
+Sflower_all <- sqrt(sum(flowers_regression_all$residuals ^ 2)/(length(flowers_regression_all$residuals) - 2)) #get variance in residuals, for calculating Pearsons residuals
 qqnorm(flowers_regression_all$residuals/Sflower_all)
+```
 
+### Bayesian Model
+
+We then fit the same model using a Bayesian procedure.
+
+```{r flower bayes regression}
+#bayesian methods
+prior1 <- c(
+  prior(normal(0,20), class = Intercept), #prior on intercept has wide variance, given that previous studies indicate that can be dozens of flowers in the tree, but we began collecting data at the begininning of the season. Perhaps the prior mean should be greater than 0)
+  prior(normal(0,5), class = b, coef = Study_night), #slope prior is centered at 0 as we don't assume apriori that we will see changes in flower counts over study nights. Variance is less than the intercept, as we expect growth to be only a portion of the typical number of flowers
+  prior(cauchy(0,10), class = sigma) #standard prior for variance
+)
+
+flowers_regression_all_bayes <- brm(Count ~ Study_night,
+                                    data = select(as.data.frame(flower_counts), !geom), 
+                                    family = "gaussian",
+                                    prior = prior1,
+                                    warmup =1000, iter = 2000,
+                                    refresh = 0)
+
+summary(flowers_regression_all_bayes)
+```
+As expected, the results of the bayesian regression closely fit the frequentist approach. For this model, we plot the mean and 89%CI for posterior predictions by study_night
+
+```{r posterior plotting1}
+#Get predictions from each sample of the posterior for each night in the study
+post_predictions <- brms::posterior_predict(flowers_regression_all_bayes, list(Study_night = 1:max(flower_counts$Study_night)))
+#determine and plot average predictions with 89% CIs
+predictive_CIs <- list(mean_pred = apply(post_predictions, MARGIN = 2, mean),
+                       upper = apply(post_predictions, MARGIN = 2, quantile, 0.945),
+                       lower = apply(post_predictions, MARGIN = 2, quantile, 0.055))
+{
+  plot(x = flower_counts$Study_night, y = flower_counts$Count, xlim = c(0, max(flower_counts$Study_night)), ylim = c(min(predictive_CIs[[3]]), max(predictive_CIs[[2]])))
+  lines(x = seq_along(predictive_CIs[[1]]), y = predictive_CIs[[1]], type = "l", lty = "dashed")
+  lines(x = seq_along(predictive_CIs[[2]]), y = predictive_CIs[[2]], type = "l")
+  lines(x = seq_along(predictive_CIs[[3]]), y = predictive_CIs[[3]], type = "l")
+}
+```
+
+## Kinkajous Residence Times
+
+```{r}
 #predicting kinkajou residence time based on study night and flower count
 
 residence_regression_all <- lm(data = combined_data, formula = Minutes_Per_Hour ~ Study_night + Count)
