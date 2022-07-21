@@ -35,6 +35,7 @@ library(ggridges)
 library(scales)
 library(nlme)
 library(brms)
+library(corrplot)
 ```
 
 ```{r helper_functions, include=FALSE}
@@ -531,68 +532,38 @@ Zero is contained with the 89% credible interval of the posterior distributions 
 
 ## Analysis of Crown Regions
 
-```{r flower count regression analysis by region}
+Under Hypothesis A (Kinkajous prefer to forage in regions with greater densities of flowers), we predict that the more flowers are in a region of the tree crown, relative to the other regions, the more time kinkajous will spend in that region for the night. Because this prediction concerns the correlations between regional flowers, we begin by looking at the correlation matrix for flowers counts and kinkajou residence times in each region
 
-# using filter function to create new flower data subsets
-flowers_R1 <- filter(flower_counts_region, Region == 1) %>% as.data.frame() %>% select(!geom)
-flowers_R2 <- filter(flower_counts_region, Region == 2) %>% as.data.frame() %>% select(!geom)
-flowers_R3 <- filter(flower_counts_region, Region == 3) %>% as.data.frame() %>% select(!geom)
+```{r residence correlations by region}
+combined_data_region <- merge(flower_counts_region, kinkajou_counts_region, by = c("Study_night","Region") , all = TRUE) %>%
+  mutate(Total_Flowers = combined_data$Count[pmatch(Study_night, combined_data$Study_night, duplicates.ok = TRUE)])
 
-#predicting flower counts within the regions based on study night
+correlations <- combined_data_region %>% 
+  select(Count, Region, Minutes_Per_Hour, Total_Flowers, Study_night) %>% 
+  pivot_wider(names_from = Region, values_from = c(Count, Minutes_Per_Hour)) %>% 
+  select(!Study_night) %>%
+  cor(use = "complete.obs")
 
-# linear regression flower count region 1
-flowers_regression_R1 <- lm(data = flowers_R1, formula = Count ~ Study_night)
-summary(flowers_regression_R1)
+corrplot(correlations, method = "color")
+```
 
-plot(y = predict(flowers_regression_R1, newdata = data.frame(Study_night = 0:max(flowers_R1$Study_night))), x = 0:max(flowers_R1$Study_night), type = "l",
-     xlab = "Study Night",
-     ylab = "Flower Count",
-     main = "Region 1 Flower Count Regression")
-points(x = flowers_R1$Study_night, y = flowers_R1$Count)
+  
+#bayesian methods
+prior2 <- c(
+  prior(normal(0,20), class = Intercept), #prior on intercept has wide variance, given that previous studies indicate that can be dozens of flowers in the tree, but we began collecting data at the begininning of the season. Perhaps the prior mean should be greater than 0)
+  prior(normal(0,5), class = b, coef = Study_night), #slope prior is centered at 0 as we don't assume apriori that we will see changes in flower counts over study nights. Variance is less than the intercept, as we expect growth to be only a portion of the typical number of flowers
+  prior(normal(0,5), class = b, coef = Count),
+  prior(cauchy(0,10), class = sigma) #standard prior for variance
+)
 
-plot(x = flowers_R1$Study_night, y = flowers_regression_R1$residuals,
-     xlab = "Study Night",
-     ylab = "Residuals",
-     main = "Region 1 Flower Count Residuals")
+kinks_regression_all_bayes <- brm(Minutes_Per_Hour ~ Count + Region,
+                                    data = select(as.data.frame(combined_data_region), !geometry), 
+                                    family = "gaussian",
+                                    prior = prior2,
+                                    warmup =1000, iter = 2000,
+                                    refresh = 0)
 
-Sflower_region1 <- sqrt(sum(flowers_regression_R1$residuals ^ 2)/(length(flowers_regression_R1$residuals) - 2))
-qqnorm(flowers_regression_R1$residuals/Sflower_region1)
-
-# linear regression flower count region 2
-flowers_regression_R2 <- lm(data = flowers_R2, formula = Count ~ Study_night)
-summary(flowers_regression_R2)
-
-plot(y = predict(flowers_regression_R2, newdata = data.frame(Study_night = 0:max(flowers_R2$Study_night))), x = 0:max(flowers_R2$Study_night), type = "l",
-     xlab = "Study Night",
-     ylab = "Flower Count",
-     main = "Region 2 Flower Count Regression")
-points(x = flowers_R2$Study_night, y = flowers_R2$Count)
-
-plot(x = flowers_R2$Study_night, y = flowers_regression_R2$residuals,
-     xlab = "Study Night",
-     ylab = "Residuals",
-     main = "Region 2 Flower Count Residuals")
-
-Sflower_region2 <- sqrt(sum(flowers_regression_R2$residuals ^ 2)/(length(flowers_regression_R2$residuals) - 2))
-qqnorm(flowers_regression_R2$residuals/Sflower_region2)
-
-# linear regression flower count region 3
-flowers_regression_R3 <- lm(data = flowers_R3, formula = Count ~ Study_night)
-summary(flowers_regression_R3)
-
-plot(y = predict(flowers_regression_R3, newdata = data.frame(Study_night = 0:max(flowers_R3$Study_night))), x = 0:max(flowers_R3$Study_night), type = "l",
-     xlab = "Study Night",
-     ylab = "Flower Count",
-     main = "Region 3 Flower Count Regression")
-points(x = flowers_R3$Study_night, y = flowers_R3$Count)
-
-plot(x = flowers_R3$Study_night, y = flowers_regression_R3$residuals,
-     xlab = "Study Night",
-     ylab = "Residuals",
-     main = "Region 3 Flower Count Residuals")
-
-Sflower_region3 <- sqrt(sum(flowers_regression_R3$residuals ^ 2)/(length(flowers_regression_R3$residuals) - 2))
-qqnorm(flowers_regression_R3$residuals/Sflower_region3)
+summary(kinks_regression_all_bayes)
 ```
 
 ```{r residence regression analysis by region}
@@ -637,7 +608,7 @@ R1_data <- filter(combined_data_region, Region == 1)
 # qqnorm(residence_region3_regression$residuals/Sres_region3)
 
 # combining region regressions into 1 regression
-combined_data_region <- mutate(combined_data_region, Total_Flowers = combined_data$Count[pmatch(Study_night, combined_data$Study_night, duplicates.ok = TRUE)])
+
 residence_regression <- lm(data = combined_data_region, formula = Minutes_Per_Hour ~ Count + Region + Total_Flowers)
 summary(residence_regression)
 # We want to visualize the affect of region and regional flower count, after accounting for the effect of total flower count. TO do this, we substract the modeled effect of total flower count from all of our residence times
