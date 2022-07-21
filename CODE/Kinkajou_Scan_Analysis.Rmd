@@ -24,11 +24,14 @@ In this document, we 1) prepare and clean the data, 2) Develop predictions about
 # Data Setup
 
 ```{r, setup, include=FALSE}
-library(tidyverse)
+library(stringr)
+library(readr)
+library(tidyr)
 library(lubridate)
 library(sf)
 library(dplyr)
 library(ggplot2)
+library(ggridges)
 library(scales)
 library(nlme)
 library(brms)
@@ -435,7 +438,8 @@ flowers_regression_all_bayes <- brm(Count ~ Study_night,
 
 summary(flowers_regression_all_bayes)
 ```
-As expected, the results of the bayesian regression closely fit the frequentist approach. For this model, we plot the mean and 89%CI for posterior predictions by study_night
+As expected, the results of the bayesian regression closely fit the frequentist approach. For this model, we plot the mean and 89%CI for posterior predictions by study_night.
+Queation for collaborators: Is it more interesting to plot the Predictive CIs like this, or a sampling of regressions from the posterior
 
 ```{r posterior plotting1}
 #Get predictions from each sample of the posterior for each night in the study
@@ -452,9 +456,15 @@ predictive_CIs <- list(mean_pred = apply(post_predictions, MARGIN = 2, mean),
 }
 ```
 
+Potential Addition: AR Model of flower counts?
+
 ## Kinkajous Residence Times
 
-```{r}
+### Linear Regression (Frequentist)
+
+Next, we look at the pattern of kinkajou residence times in the full tree crown. Following Hypothesis A (Kinkajous prefer to forage in regions with greater densities of flowers) we predicted that kinkajou residence times would increase as a function of flower counts in the tree. This predicted pattern did not appear to hold in the data visualization, but we test the prediction anyway by including both study Night and Flower Count as predictors in a linear model of kinkajous residence times.
+
+```{r residence time regression}
 #predicting kinkajou residence time based on study night and flower count
 
 residence_regression_all <- lm(data = combined_data, formula = Minutes_Per_Hour ~ Study_night + Count)
@@ -467,14 +477,59 @@ summary(residence_regression_all)
 # 
 # plot(x = combined_data$Count, y = combined_data$Minutes_Per_Hour)
 # lines(x = combined_data$Count, y = residence_regression_all$coefficients["(Intercept)"] + residence_regression_all$coefficients["Count"] * combined_data$Count)
+```
+As suggested by initial visualization of the data, we so no significant linear effect of study night or flower count on kinkajous residence times in the tree crown. Plotting the residuals of the model reveals no worrisome underlying error structure that would suggest bias or violation of assumptions in the model, but the very small sample size does increase the risk of false conclusions from linear regression
 
+```{r residence regression plot}
 Sres_all <- sqrt(sum(residence_regression_all$residuals ^ 2)/(length(residence_regression_all$residuals) - 2))
 plot(residence_regression_all$residuals,
      xlab = "Index",
      ylab = "Residuals",
      main = "Full Tree Residence Time Residuals")
+```
+
+```{r residence reqression residuals}
 qqnorm(residence_regression_all$residuals/Sres_all)
 ```
+### Linear Regression Bayesian
+
+```{r kinkajou bayes regression}
+#bayesian methods
+prior2 <- c(
+  prior(normal(0,20), class = Intercept), #prior on intercept has wide variance, given that previous studies indicate that can be dozens of flowers in the tree, but we began collecting data at the begininning of the season. Perhaps the prior mean should be greater than 0)
+  prior(normal(0,5), class = b, coef = Study_night), #slope prior is centered at 0 as we don't assume apriori that we will see changes in flower counts over study nights. Variance is less than the intercept, as we expect growth to be only a portion of the typical number of flowers
+  prior(normal(0,5), class = b, coef = Count),
+  prior(cauchy(0,10), class = sigma) #standard prior for variance
+)
+
+kinks_regression_all_bayes <- brm(Minutes_Per_Hour ~ Study_night + Count,
+                                    data = select(as.data.frame(combined_data), !geometry), 
+                                    family = "gaussian",
+                                    prior = prior2,
+                                    warmup =1000, iter = 2000,
+                                    refresh = 0)
+
+summary(kinks_regression_all_bayes)
+```
+
+As expected, the results of the bayesian regression closely fit the frequentist approach. For this model, we visualize the posterior distributions of the co-efficients for Study Night and Flower Count.
+
+```{r posterior plotting2}
+#Get predictions from each sample of the posterior for each night in the study
+post_samples <- brms::as_draws_df(kinks_regression_all_bayes)
+#determine and plot average predictions with 89% CIs
+post_samples %>% 
+  pivot_longer(b_Study_night:lp__, names_to = "Coefficient_Type", values_to = "Estimated_Effect") %>%
+  filter(Coefficient_Type %in% c("b_Study_night", "b_Count")) %>%
+  ggplot() + 
+  stat_density_ridges(aes(x = Estimated_Effect, y = Coefficient_Type), scale = 1, quantile_lines = TRUE, quantiles = c(0.055, 0.945)) +
+  geom_vline(xintercept = 0, color = "red", linetype = "dashed") +
+  theme_classic()
+```
+
+Zero is contained with the 89% credible interval of the posterior distributions of either coefficient, thus we do not have sufficient evidence to claim that either the study night or the flower count have an appreciable effect on the nightly residence timesof kinkajous in the balsa crown.
+
+## Analysis of Crown Regions
 
 ```{r flower count regression analysis by region}
 
