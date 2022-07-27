@@ -231,17 +231,20 @@ Next, we count the flowers in the whole tree on each night and by region. For ni
 
 ```{r flower counting}  
 flower_counts <- all_upflowers %>% 
-  group_by(Study_night, Time) %>% summarise(Count = n()) %>% 
   mutate(Study_night = Study_night - (Time == "AM")) %>% #study night is based on date, but we want to match AM recordings to previous PM recordins, so we subtract one from all AM study night values
+  group_by(Study_night, Time) %>% 
+  summarise(Count = n()) %>% 
   group_by(Study_night) %>% #where there were good photos for both AM and PM, we will use the mean flower count which is achieved by grouping and summariying
   summarise(Count = mean(Count)) %>% 
   transform(Growth = get_growth_index(Count)) #used to visually compare changes in flower count to changes in kinkajou residency without bias
 
 flower_counts_region <- all_upflowers %>% mutate(Study_night = Study_night - (Time == "AM")) %>% #study night is based on date, but we want to match AM recordings to previous PM recordins, so we subtract one from all AM study night values
-  group_by(Study_night, Region) %>% 
+  group_by(Study_night, Region, Time) %>% 
   summarise(Count = n()) %>% 
   group_by(Study_night, Region) %>% 
   mutate(Count = mean(Count)) %>% 
+  filter(Time == "AM") %>%
+  select(!Time) %>%
   group_by(Region) %>% group_modify(~ transform(.x, Growth = get_growth_index(Count))) %>% 
   ungroup()
 ```
@@ -422,7 +425,7 @@ qqnorm(flowers_regression_all$residuals/Sflower_all)
 
 We then fit the same model using a Bayesian procedure.
 
-```{r flower bayes regression}
+```{r flower bayes regression, eval = FALSE}
 #bayesian methods
 prior1 <- c(
   prior(normal(0,20), class = Intercept), #prior on intercept has wide variance, given that previous studies indicate that can be dozens of flowers in the tree, but we began collecting data at the begininning of the season. Perhaps the prior mean should be greater than 0)
@@ -437,12 +440,15 @@ flowers_regression_all_bayes <- brm(Count ~ Study_night,
                                     warmup =1000, iter = 2000,
                                     refresh = 0)
 
+save(flowers_regression_all_bayes, file = "../Results/flower_count_MCMCs.Rdata")
+
 summary(flowers_regression_all_bayes)
 ```
 As expected, the results of the bayesian regression closely fit the frequentist approach. For this model, we plot the mean and 89%CI for posterior predictions by study_night.
 Queation for collaborators: Is it more interesting to plot the Predictive CIs like this, or a sampling of regressions from the posterior
 
 ```{r posterior plotting1}
+load("../Results/flower_count_MCMCs.Rdata")
 #Get predictions from each sample of the posterior for each night in the study
 post_predictions <- brms::posterior_predict(flowers_regression_all_bayes, list(Study_night = 1:max(flower_counts$Study_night)))
 #determine and plot average predictions with 89% CIs
@@ -510,12 +516,14 @@ kinks_regression_all_bayes <- brm(Minutes_Per_Hour ~ Study_night + Count,
                                     warmup =1000, iter = 2000,
                                     refresh = 0)
 
+save(kinks_regression_all_bayes, file = "../Results/residence_time_full_tree_MCMCs.Rdata")
 summary(kinks_regression_all_bayes)
 ```
 
 As expected, the results of the bayesian regression closely fit the frequentist approach. For this model, we visualize the posterior distributions of the co-efficients for Study Night and Flower Count.
 
 ```{r posterior plotting2}
+load("../Results/residence_time_full_tree_MCMCs.Rdata")
 #Get predictions from each sample of the posterior for each night in the study
 post_samples <- brms::as_draws_df(kinks_regression_all_bayes)
 #determine and plot average predictions with 89% CIs
@@ -546,24 +554,33 @@ correlations <- combined_data_region %>%
 
 corrplot(correlations, method = "color")
 ```
+This correlogram reveals a negative relationshipt between flower counts in a region and residence time. In region one, the correlation is negative, in region two it is near zero and in region 3 it is positive. However, this likely reflects the pattern of residence time and flower counts in the whole tree. We are interested in how the density of flowers relative to other regions affects residence times.
 
+```{r proportion correlations}
+correlations_proportion <- combined_data_region %>% 
+  mutate(Count_proportion = Count/Total_Flowers) %>%
+  select(Count_proportion, Region, Minutes_Per_Hour, Total_Flowers, Study_night) %>% 
+  pivot_wider(names_from = Region, values_from = c(Count_proportion, Minutes_Per_Hour)) %>% 
+  select(!Study_night) %>%
+  cor(use = "complete.obs")
+  
+corrplot(correlations_proportion, method = "color")
+```
   
 #bayesian methods
-prior2 <- c(
-  prior(normal(0,20), class = Intercept), #prior on intercept has wide variance, given that previous studies indicate that can be dozens of flowers in the tree, but we began collecting data at the begininning of the season. Perhaps the prior mean should be greater than 0)
-  prior(normal(0,5), class = b, coef = Study_night), #slope prior is centered at 0 as we don't assume apriori that we will see changes in flower counts over study nights. Variance is less than the intercept, as we expect growth to be only a portion of the typical number of flowers
-  prior(normal(0,5), class = b, coef = Count),
-  prior(cauchy(0,10), class = sigma) #standard prior for variance
-)
+```{r regional analysis bayes}
+prior3 <- get_prior(Minutes_Per_Hour ~ Count + Region + Total_Flowers,
+                                            data = combined_data_region, 
+                                            family = "gaussian")
 
-kinks_regression_all_bayes <- brm(Minutes_Per_Hour ~ Count + Region,
-                                    data = select(as.data.frame(combined_data_region), !geometry), 
-                                    family = "gaussian",
-                                    prior = prior2,
-                                    warmup =1000, iter = 2000,
-                                    refresh = 0)
-
-summary(kinks_regression_all_bayes)
+residence_by_region_regression_model <- brm(Minutes_Per_Hour ~ Count + Region + Total_Flowers,
+                                            data = combined_data_region, 
+                                            family = "gaussian",
+                                            prior = prior3,
+                                            warmup =1000, iter = 2000,
+                                            refresh = 0)
+save(residence_by_region_regression_model, file = "../Results/residence_by_region_MCMCs.Rdata")
+summary(residence_by_region_regression_model)
 ```
 
 ```{r residence regression analysis by region}
@@ -571,9 +588,9 @@ summary(kinks_regression_all_bayes)
 #predicting kinkajou residence time based on study night and flower count
 
 # combining flower count and residence data containing the regions
-combined_data_region <- merge(flower_counts_region, kinkajou_counts_region, by = c("Study_night","Region") , all = TRUE)
 
-R1_data <- filter(combined_data_region, Region == 1)
+
+#R1_data <- filter(combined_data_region, Region == 1)
 
 #linear regression residence time region 1
 
