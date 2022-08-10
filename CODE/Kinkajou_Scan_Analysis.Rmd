@@ -139,6 +139,7 @@ all_kinkajou_scans_long$Region <- sapply(all_kinkajou_scans_long$Region, switch,
 write.csv(all_kinkajou_scans_long, "../DATA/processed/all_kinkajou_scans.csv")
 ```
 
+### Residence Times
 With a quick operation, we also create a table of the total kinkajous-minutes spent in the whole crown and in each region on each night (where two kinkajous counted in the same regions during a scan consititutes two kinkajou-minutes
 )
 ```{r nightly_kink_counts}
@@ -146,7 +147,7 @@ kinkajou_counts <- all_kinkajou_scans_long %>% group_by(Study_night) %>% summari
 
 kinkajou_counts_region <- all_kinkajou_scans_long %>% group_by(Study_night, Region) %>% summarise(Minutes_Per_Hour = get_kinkMinutesPerHour(Count, categories = 2)) %>% group_by(Region) %>% group_modify(~ transform(.x, Growth = get_growth_index(Minutes_Per_Hour)))
 ```
-
+### Transitions
 In addition to the counts of kinkajous in each region, we are interested in how kinkajous transitions between region. Thus, we use the count data to create a transition matrix for each scan, where the number in each cell denotes how many kinkajous moved from the region denoted by the row to the region denoted by the column. These transitions matrices are collated into an array for each study night, where the third dimension is the scan (video-minute). The arrays for each night are stored in a list.
 
 ```{r Get_transitions}
@@ -192,7 +193,6 @@ And here are the transitions infered by our algorithm. Note that the transition 
 ```{r}
 transition_arrays[["20"]][,,203]
 ```
-
 
 ## Drone Image Processing and Flower Counts
 
@@ -249,11 +249,52 @@ flower_counts_region <- all_upflowers %>% mutate(Study_night = Study_night - (Ti
   ungroup()
 ```
 
+### Adjusted Flower Counts
 
-Lastly, we put all of the nightly kinkajou and flower count data together into a single dataframe so they can be easily visualized jointly.
+For testing our hypotheses, we need to investigate not only how the number of flowers in each region affects kinkajou behavior, but how the relative abundance between regions affects kinkajou behavior. To do this, we determine the average proportion of flowers counted in each region over the full course of the study (eg, Region 1 typically has 0.30 of the total flowers in the tree crown on a given night). We then use this proportion to determine the expected number of flowers in each region for each night, given the total number of flowers. Finally, we subract this expected flower count from the actual counts in each region to get deviations from the expectation. By using these deviations as predictors of kinkajou behavior, we can tes the effects of increases or decreases in the relative abundance of flowers within regions.
+
+```{r calculate adjusted flower counts}
+flower_averages <- flower_counts_region %>% 
+  group_by(Region) %>% 
+  summarize(total_flowers = sum(Count)) %>%
+  mutate(proportion = total_flowers/sum(total_flowers))
+```
+
+## Integrated Data-Structures
+
+Lastly, we put all of the nightly kinkajou and flower count data together into a single dataframe so they can be easily visualized jointly. First, we integrate flower counts and residence time data
 ```{r combining_data}
 combined_data <- merge(flower_counts, kinkajou_counts, by = "Study_night", all = TRUE)
+
+combined_data_region <- merge(flower_counts_region, kinkajou_counts_region, by = c("Study_night","Region") , all = TRUE) %>%
+  mutate(Total_Flowers = combined_data$Count[pmatch(Study_night, combined_data$Study_night, duplicates.ok = TRUE)]) %>%
+  mutate(Adjusted_Count = Count - (Total_Flowers * flower_averages$proportion[Region]))
 ```
+
+### Transition Decisions
+
+Then, we annotate transition decisions with flower count data, setting up the data-frame to enable analysis of decisions with a binary response. In this response, a 1 indicates that the kinkajou moved to the region with the higher adjusted flower count.
+
+```{r transition decisions}
+transition_arrays[["20"]][,,203]
+
+get_transition_info <- function(transition_array, flower_data){
+  decision_transitions <- apply(transition_array, MARGIN = 3, FUN = function(X) {X *matrix(c(0,1,1,0,                                                                        1,0,1,0,                                                                        1,1,0,0,                                                                        0,0,0,0),nrow = 4, ncol = 4)} ) %>%#this matrix is multiplied with a transition matrix to remove all transitions that are not from one region to a different region
+    array(dim = dim(transition_array))
+  variables <- c("Success", "Success_Region", "Fail_Region", "Ajusted_Count_1", "Adjusted_Count_0")
+    decision_data <- data.frame(matrix(nrow = sum(decision_transitions), nrow = length(variables)))
+    names(decision_data) <- variables
+    
+    
+    i = 0 #indexing variable for filling decision_data with data from decision transitions
+    
+    while(sum(decision_transitions) > 0) {
+      decisions <- as.data.frame(which(decision_transitions > 0, arr.ind = TRUE))
+      decisions <- mutate(decisions, adj_flowers_choice = flower_data[dim2])
+    }
+}
+```
+
 
 # Data Visualization
 
@@ -307,12 +348,17 @@ ggplot(flower_counts, aes(x = Study_night, y = Count)) +
   geom_line(stat = "identity") + 
   geom_point(stat = "identity") +
   theme_classic() +
-  labs(title = "Flower Counts by Region")
+  labs(title = "Average Flower Counts")
 ```
 And then the counts by region
 
 ```{r flower counts region}
 ggplot(flower_counts_region, aes(x = Study_night, y = Count, color = Region)) + geom_line(stat = "identity") + geom_point(stat = "identity") +
+  theme_classic() +
+  labs(title = "Flower Counts by Region")
+```
+```{r adjusted flower counts region}
+ggplot(combined_data_region[!is.na(combined_data_region$Count),], aes(x = Study_night, y = Adjusted_Count, color = Region)) + geom_line(stat = "identity") + geom_point(stat = "identity") +
   theme_classic() +
   labs(title = "Flower Counts by Region")
 ```
@@ -332,7 +378,8 @@ ggplot(flower_counts, aes(x = Study_night, y = Growth)) +
   scale_linetype_manual(values = c("Flower Count" = "solid", "Residence Time" = "dashed")) +
   labs(#title = "Growth in Minutes per Hour Kinkajous spend in a balsa crown (black dotted) \n and balsa flower counts (solid) over study period",
        y = "Growth (%)",
-       x = "Study Night")
+       x = "Study Night",
+       title = "Growth in Flower Counts and Kinkajous Residence Time")
 ```
  In the plot above, we see an increase with flower counts over time. Kinkajou residence on the other hand does not appear to have a trend until it drops off toward the end of the study. This runs counter to our prediction drawn from Hypothesis A that kinkajous would spend more time in the three when there were more flowers. However, we do not have data on the other resources available in the kinkajous' environment. Toward the end of our study period, other resources would likely have been coming into season, and thus the balsa tree may have been less attractive relative to other resources in the kinkajous'sd environment, despite the its increasing flower count.
  
@@ -349,6 +396,25 @@ ggplot(flower_counts_region, aes(x = Study_night, y = Growth)) + geom_line(color
        x = "Study Night")
 ```
 Looking at flower counts and residence times by regions, there are not any strongly apparent differences in the interaction between balsa flowers and kinkajous.
+
+## Kinkajous Transitions
+
+Examining only residence times leaves open the possibility that kinkajous simply stay in areas with more flowers because they take more time to forage there. To asses how kinkajous make decisions when moving between regions, we also look at how kinkajous move from region to region.
+
+```{r transition heatmaps}
+nightly_transitions <- vector("list", length = length(transition_arrays))
+names(nightly_transitions)  <-  names(transition_arrays)
+for(i in seq_along(nightly_transitions)) {
+  nightly_transitions[[i]] <- apply(transition_arrays[[i]], MARGIN = c(1,2), sum)
+}
+heatmap(nightly_transitions[[13]], Rowv = NA, Colv = NA, xlab = "Region (to)", ylab = "Region (from)", main = "Transition Heatmap - Study Night 28")
+heatmap.2(nightly_transitions[[13]], Rowv = NA, Colv = NA, xlab = "Region (to)", ylab = "Region (from)", main = "Transition Heatmap - Study Night 28", cellnote = nightly_transitions[[13]], trace = "none")
+all_transitions <- Reduce("+", nightly_transitions)
+heatmap.2(all_transitions, Rowv = NA, Colv = NA, xlab = "Region (to)", ylab = "Region (from)", main = "Transition Heatmap - All Nights", cellnote = all_transitions, trace = "none")
+```
+
+
+## Summary Statistics
 
 Below, we extract some descriptive statistics for describing some of the patterns in kinkajous residence time and flower counts visualized throughout the plots in this section.
 
@@ -379,6 +445,7 @@ paste("mean kinkajou residence in the entire tree, minutes per hour", mean_resid
       "mean flower count in entire tree by day", mean_flowers_counts,
       "standard deviation of mean flower count in entire tree by day", var_flower_counts, sep=" ")
 ```
+
 
 # Statistical Analysis
 
@@ -472,7 +539,7 @@ Potential Addition: AR Model of flower counts?
 Next, we look at the pattern of kinkajou residence times in the full tree crown. Following Hypothesis A (Kinkajous prefer to forage in regions with greater densities of flowers) we predicted that kinkajou residence times would increase as a function of flower counts in the tree. This predicted pattern did not appear to hold in the data visualization, but we test the prediction anyway by including both study Night and Flower Count as predictors in a linear model of kinkajous residence times.
 
 ```{r residence time regression}
-#predicting kinkajou residence time based on study night and flower count
+#predicting kinkajou residence time based on study night and adjusted flower count
 
 residence_regression_all <- lm(data = combined_data, formula = Minutes_Per_Hour ~ Study_night + Count)
 summary(residence_regression_all)
@@ -533,7 +600,8 @@ post_samples %>%
   ggplot() + 
   stat_density_ridges(aes(x = Estimated_Effect, y = Coefficient_Type), scale = 1, quantile_lines = TRUE, quantiles = c(0.055, 0.945)) +
   geom_vline(xintercept = 0, color = "red", linetype = "dashed") +
-  theme_classic()
+  theme_classic() +
+  labs(title = "Posterior Distribution of Coefficients on Kinkajou Residence Time")
 ```
 
 Zero is contained with the 89% credible interval of the posterior distributions of either coefficient, thus we do not have sufficient evidence to claim that either the study night or the flower count have an appreciable effect on the nightly residence timesof kinkajous in the balsa crown.
@@ -543,9 +611,6 @@ Zero is contained with the 89% credible interval of the posterior distributions 
 Under Hypothesis A (Kinkajous prefer to forage in regions with greater densities of flowers), we predict that the more flowers are in a region of the tree crown, relative to the other regions, the more time kinkajous will spend in that region for the night. Because this prediction concerns the correlations between regional flowers, we begin by looking at the correlation matrix for flowers counts and kinkajou residence times in each region
 
 ```{r residence correlations by region}
-combined_data_region <- merge(flower_counts_region, kinkajou_counts_region, by = c("Study_night","Region") , all = TRUE) %>%
-  mutate(Total_Flowers = combined_data$Count[pmatch(Study_night, combined_data$Study_night, duplicates.ok = TRUE)])
-
 correlations <- combined_data_region %>% 
   select(Count, Region, Minutes_Per_Hour, Total_Flowers, Study_night) %>% 
   pivot_wider(names_from = Region, values_from = c(Count, Minutes_Per_Hour)) %>% 
@@ -569,11 +634,11 @@ corrplot(correlations_proportion, method = "color")
   
 #bayesian methods
 ```{r regional analysis bayes}
-prior3 <- get_prior(Minutes_Per_Hour ~ Count + Region + Total_Flowers,
+prior3 <- get_prior(Minutes_Per_Hour ~ Adjusted_Count + Region + Total_Flowers,
                                             data = combined_data_region, 
                                             family = "gaussian")
 
-residence_by_region_regression_model <- brm(Minutes_Per_Hour ~ Count + Region + Total_Flowers,
+residence_by_region_regression_model <- brm(Minutes_Per_Hour ~ Adjusted_Count + Region + Total_Flowers,
                                             data = combined_data_region, 
                                             family = "gaussian",
                                             prior = prior3,
@@ -583,64 +648,24 @@ save(residence_by_region_regression_model, file = "../Results/residence_by_regio
 summary(residence_by_region_regression_model)
 ```
 
-```{r residence regression analysis by region}
-
-#predicting kinkajou residence time based on study night and flower count
-
-# combining flower count and residence data containing the regions
-
-
-#R1_data <- filter(combined_data_region, Region == 1)
-
-#linear regression residence time region 1
-
-#R1_Predictions <- predict(residence_region1_regression, newdata = select(R1_data, Count, Study_night))
-#plot(x = filter(combined_data_region, Region == 1)$Study_night, y = filter(combined_data_region, Region == 1)$Minutes_Per_Hour, xlab = "Study Night", ylab = "Residence Time", main = "Residence Region 1 Regression") #plot actual residences times by night
-
-#lines(x = filter(combined_data_region, Region == 1)$Study_night, y = R1_Predictions
-
-# residence_region1_regression <- lm(data = R1_data, formula = Minutes_Per_Hour ~ Study_night + Count)
-# summary(residence_region1_regression)
-# 
-# Sres_region1 <- sqrt(sum(residence_region1_regression$residuals ^ 2)/(length(residence_region1_regression$residuals) - 2))
-# plot(residence_region1_regression$residuals, xlab = "Index", ylab = "Residuals", main = "Residence Region 1 Regression Residuals")
-# qqnorm(residence_region1_regression$residuals/Sres_region1)
-# 
-# 
-# 
-# #linear regression residence time region 2
-# residence_region2_regression <- lm(data = filter(combined_data_region, Region == 2), formula = Minutes_Per_Hour ~ Study_night + Count)
-# summary(residence_region2_regression)
-# 
-# Sres_region2 <- sqrt(sum(residence_region2_regression$residuals ^ 2)/(length(residence_region2_regression$residuals) - 2))
-# plot(residence_region2_regression$residuals, xlab = "Index", ylab = "Residuals", main = "Residence Region 2 Regression Residuals")
-# qqnorm(residence_region2_regression$residuals/Sres_region2)
-# 
-# #linear regression residence time region 3
-# residence_region3_regression <- lm(data = filter(combined_data_region, Region == 3), formula = Minutes_Per_Hour ~ Study_night + Count)
-# summary(residence_region3_regression)
-# 
-# Sres_region3 <- sqrt(sum(residence_region3_regression$residuals ^ 2)/(length(residence_region3_regression$residuals) - 2))
-# plot(residence_region3_regression$residuals, xlab = "Index", ylab = "Residuals", main = "Residence Region 3 Regression Residuals")
-# qqnorm(residence_region3_regression$residuals/Sres_region3)
-
-# combining region regressions into 1 regression
-
-residence_regression <- lm(data = combined_data_region, formula = Minutes_Per_Hour ~ Count + Region + Total_Flowers)
-summary(residence_regression)
-# We want to visualize the affect of region and regional flower count, after accounting for the effect of total flower count. TO do this, we substract the modeled effect of total flower count from all of our residence times
-combined_data_region = mutate(combined_data_region, Adjusted_Residence = Minutes_Per_Hour - Total_Flowers * residence_regression$coefficients["Total_Flowers"])
-
-ggplot(combined_data_region, aes(x = Count, y = Adjusted_Residence, color = Region)) +
-  geom_point() +
-  geom_abline(slope = residence_regression$coefficients["Count"], 
-            intercept = residence_regression$coefficients["(Intercept)"], colour="firebrick1") + #Region 1
-  geom_abline(slope = residence_regression$coefficients["Count"], 
-            intercept = (residence_regression$coefficients["(Intercept)"] + residence_regression$coefficients["Region2"]), colour="forestgreen") + #Region 2
-  geom_abline(slope = residence_regression$coefficients["Count"], 
-            intercept = (residence_regression$coefficients["(Intercept)"] + residence_regression$coefficients["Region3"]), colour="dodgerblue3") + #Region 3
-  theme_classic()+
-  labs( x = "Regional Flower Count", 
-        y = "Adjusted Residence Time")
-
+```{r posterior plotting3}
+load("../Results/residence_by_region_MCMCs.Rdata")
+#Get predictions from each sample of the posterior for each night in the study
+post_samples <- brms::as_draws_df(residence_by_region_regression_model)
+names(post_samples)[c(1,3,4)] <- c("Region1", "Region2", "Region3") #Rename from Intercept for clarity
+post_samples$Region2 <- post_samples$Region2 + post_samples$Region1 #convert estimates of Region 2 coefficient to intercept estimate for region 2
+post_samples$Region3 <- post_samples$Region3 + post_samples$Region1
+#determine and plot average predictions with 89% CIs
+post_samples %>% 
+  pivot_longer(Region1:lp__, names_to = "Coefficient_Type", values_to = "Estimated_Effect") %>%
+  filter(Coefficient_Type %in% c("Region1", "Region2", "Region3", "b_Total_Flowers", "b_Adjusted_Count")) %>%
+  ggplot() + 
+  stat_density_ridges(aes(x = Estimated_Effect, y = Coefficient_Type), scale = 1, quantile_lines = TRUE, quantiles = c(0.055, 0.945)) +
+  geom_vline(xintercept = 0, color = "red", linetype = "dashed") +
+  theme_classic() +
+  xlim(-10, 25) +
+  labs(title = "Posterior Distribution of Coefficients on Kinkajou-Minutes",
+       x = "Estimate Effect",
+       y = "Coefficient")
 ```
+
