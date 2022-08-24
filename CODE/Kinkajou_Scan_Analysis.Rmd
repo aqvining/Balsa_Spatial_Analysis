@@ -230,6 +230,9 @@ The second source of data are orthomosiac images of the balsa crown created by s
 The following script extracts the spatial coordinates and regions from the geopackage files and stores them as an spatial features (sf) object, with additional annotation for the date and time of the images from which data were collected. The result looks as such . . .
 
 ```{r load_balsa_data, message = FALSE}
+region_shapes <- st_read("../DATA/raw/Crown Region Shapes/Crown_Regions.shp") %>% st_set_crs("WGS84") #the shapefiles have already been used to sort flowers. THey are loaded here primarily for the purpose of determining region areas and thus flower densities
+
+  
 files = strsplit(dir("../DATA/raw/Flower_geopackages"), split = "[.]") #seperate filenames from extensions for all files in folder
 files = files[sapply(files, function(X) X[2] == "gpkg")] #reduce file list only to gpkg files
 geopackages <- vector("list", length = length(files))
@@ -265,24 +268,35 @@ flower_counts <- all_upflowers %>%
   summarise(Count = n()) %>% 
   group_by(Study_night) %>% #where there were good photos for both AM and PM, we will use the mean flower count which is achieved by grouping and summariying
   summarise(Count = mean(Count)) %>% 
-  transform(Growth = get_growth_index(Count)) #used to visually compare changes in flower count to changes in kinkajou residency without bias
+  transform(Growth = get_growth_index(Count)) %>% #used to visually compare changes in flower count to changes in kinkajou residency without bias
+  mutate(Density = Count/(sum(st_area(region_shapes))))
 
-flower_counts_region <- all_upflowers %>% mutate(Study_night = Study_night - (Time == "AM")) %>% #study night is based on date, but we want to match AM recordings to previous PM recordins, so we subtract one from all AM study night values
+flower_counts_region <- all_upflowers %>% mutate(Study_night = Study_night - (Time == "AM")) %>% #study night is based on date, but we want to match AM recordings to previous PM recordings, so we subtract one from all AM study night values
   group_by(Study_night, Region, Time) %>% 
   summarise(Count = n()) %>% 
   group_by(Study_night, Region) %>% 
-  mutate(Count = mean(Count)) %>% 
-  filter(Time == "AM") %>%
-  select(!Time) %>%
+  summarise(Count = mean(Count)) %>% 
   group_by(Region) %>% group_modify(~ transform(.x, Growth = get_growth_index(Count))) %>% 
   ungroup()
+
+flower_counts_region <- flower_counts_region %>% mutate(Density = Count/(st_area(region_shapes)[Region])) #divide flower count by area of region to get flower density
 ```
 
 ### Adjusted Flower Counts
 
-For testing our hypotheses, we need to investigate not only how the number of flowers in each region affects kinkajou behavior, but how the relative abundance between regions affects kinkajou behavior. To do this, we determine the average proportion of flowers counted in each region over the full course of the study (eg, Region 1 typically has 0.30 of the total flowers in the tree crown on a given night). We then use this proportion to determine the expected number of flowers in each region for each night, given the total number of flowers. Finally, we subract this expected flower count from the actual counts in each region to get deviations from the expectation. By using these deviations as predictors of kinkajou behavior, we can tes the effects of increases or decreases in the relative abundance of flowers within regions.
+For testing our hypotheses, we need to investigate not only how the number of flowers in each region affects kinkajou behavior, but how the relative abundance between regions affects kinkajou behavior. To do this, we determine the average proportion of flowers counted in each region over the full course of the study (eg, Region 1 typically has 0.30 of the total flowers in the tree crown on a given night). We then use this proportion to determine the expected number of flowers in each region for each night, given the total number of flowers. Finally, we subtract this expected flower count from the actual counts in each region to get deviations from the expectation. By using these deviations as predictors of kinkajou behavior, we can tes the effects of increases or decreases in the relative abundance of flowers within regions.
 
 ```{r calculate adjusted flower counts}
+flower_counts_region <- flower_counts_region %>% mutate(Relative_Density = Density - flower_counts$Density[pmatch(Study_night, flower_counts$Study_night, duplicates.ok = TRUE)]) #match study_nights between regional and full tree flower count data, subtracting the full tree flower density from each regional density for each night
+
+flower_counts_region$Expected_Relative_Density <- NA
+for(i in 1:nrow(flower_counts_region)){
+  flower_counts_region$Expected_Relative_Density[i] <- mean(filter(flower_counts_region, 
+                                                                   Study_night < flower_counts_region$Study_night[i] &
+                                                                     Region == flower_counts_region$Region[i])$Relative_Density)
+}
+
+#flower_averages are used in next code chunk to calculate adjusted values
 flower_averages <- flower_counts_region %>% 
   group_by(Region) %>% 
   summarize(total_flowers = sum(Count)) %>%
