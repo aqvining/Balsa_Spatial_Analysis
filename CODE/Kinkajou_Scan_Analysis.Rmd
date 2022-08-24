@@ -41,6 +41,7 @@ library(scales)
 library(nlme)
 library(brms)
 library(corrplot)
+library(units)
 ```
 
 ```{r helper_functions, include=FALSE}
@@ -394,7 +395,13 @@ ggplot(flower_counts_region, aes(x = Study_night, y = Count, color = Region)) + 
   theme_classic() +
   labs(title = "Flower Counts by Region")
 ```
+Because the regions differ in size, it is probably better to consider flwoer densitites in each region, rather than total flower counts.
 
+```{r plot regional flower densities}
+ggplot(flower_counts_region, aes(x = Study_night, y = Density, color = Region)) + geom_line(stat = "identity") + geom_point(stat = "identity") +
+  theme_classic() +
+  labs(title = "Flower Densities by Region")
+```
 Because we are interested in how relative changes in flower counts between regions affects kinkajous' movements, we can look at these data another way by adjusting the counts based on expected values. More precisely, this adjusted measure is the observed number of flowers in a region minus the proportion of total flowers observed in that region over the full study times the total number of flowers in the tree that night. This adjusted measure tells us how many more or less flowers are in a region each night than expected based on typical flower distributions in the crown
 
 $$ Adjusted Flower Count_{r,t} = Flower Count_{r,t} - \frac{\sum_{t=1}^{T}Flower Count_{r,t}}{\sum_{r=1}^{R}\sum_{t=1}^{T}Flower Count_{r,t}} * \sum_{r=1}^{R}Flower Count_{r,t} $$
@@ -406,6 +413,15 @@ ggplot(combined_data_region[!is.na(combined_data_region$Count),], aes(x = Study_
 ```
 
 We can see this plot that the adjusted flower count is low in magnitude, meaning the distribution of flowers between regions stays pretty consistent. There is increasing variance in the distribution over time, corresponding with increasing flower counts, but no clear temporal trend in which regions showed greater or lesser concentration of flowers.
+
+Another way of looking at this is by using the relative density of the region, which gives the difference, in flowers per square meter, of the density in each region relative to the whole tree on the same night. These values can also be compared to expected relative densities, calculated by averaging the relative densities observes on all previous nights, and plotted below as dashed lines
+
+```{r plot relative density}
+ggplot(flower_counts_region, aes(x = Study_night, y = Relative_Density, color = Region)) + geom_line(stat = "identity") + geom_point(stat = "identity") +
+  theme_classic() +
+  geom_line(aes(y = Expected_Relative_Density), linetype = "dashed") +
+  labs(title = "Relative Densities by Region")
+```
 
 ## Kinkajou Residence-Flower Interactions
 
