@@ -12,9 +12,13 @@ output:
 The analysis in this document seeks to answer the question "What factors influence the movements of kinkajous within the crown of a balsa tree?". We start with a few hypotheses:
 
 A. Kinkajous prefer to forage in regions with greater densities of flowers
+
 B. Kinkajous assess the density of flowers within a region through perception and/or sampling effort.
+
 C. Kinkajous predict which regions will have more flowers using information obtained from foraging on previous nights
+
 D. Kinkajous will avoid direct foraging competition with other kinkajous
+
 E. Kinkajous remember where they have been and avoid foraging in recently depleted regions
 
 To test these hypotheses, we collected data on the location of flowers within a balsa tree crown each night, and the locations of kinkajous within that crown every minute for four-hour periods. In order to conduct a spatial analysis, we divided the tree crown into three regions. As best as possible, these regions divided the crown such that all the offshoots of one or more primary branches were contained within a single region. We then tested how the spatio-temporal distribution of flowers within these regions related to the residence times of kinkajous within each region, and to the transitions of kinkajous between regions.
@@ -66,6 +70,29 @@ get_growth_index <- function(time_series) {
   }
   growth_index <- ((time_series-time_series[1])/time_series[1]) * 100
   return(c(rep(NA, times = removed), growth_index))
+}
+
+get_decision_info <- function(transition_array, flower_data){
+  # input:
+    #transition_array: an array with regions transitioned from in one dimension, regions transitioned to in the second, and time in the third, where each cell gives the number of transitions that occured from region x to region y at time t
+    #flower_data: a dataframe with columns Adjusted_Count and Region. Should only contains data from a singe study night
+  decision_transitions <- apply(transition_array, MARGIN = 3, FUN = function(X) {X *matrix(c(0,1,1,0,                                                                                                                                                              1,0,1,0,                                                                                                                                                              1,1,0,0,
+                                                                                             0,0,0,0),nrow = 4, ncol = 4)} ) %>%#this matrix is multiplied with a transition matrix to remove all transitions that are not from one region to a different region
+    array(dim = dim(transition_array))
+  
+  if (sum(decision_transitions) <= 0) return(data.frame(matrix(ncol = 7, nrow = 0))) #if there are no decisions, returns a placeholder dataframe with 7 columns and 0 rows. Done to fit with the final form of the decision data.frame with columns for From, To, Minute, adj_flowers_to, Avoid, adj_flowers_avoid, and Study_night)
+  #extract information about each decision in array
+  decisions <- as.data.frame(which(decision_transitions > 0, arr.ind = TRUE)) #get array indices for all decisions
+  #below, duplicate any rows where the same decisions was made more than once in a minute
+  decisions <- data.frame(lapply(X = decisions, 
+                                 FUN = rep, 
+                                 times = mapply(function(data, dim1,dim2,dim3) data[dim1,dim2,dim3], dim1 = decisions$dim1, dim2=decisions$dim2, dim3=decisions$dim3, MoreArgs = list(data = decision_transitions))))
+  names(decisions) <- c("From", "To", "Minute")
+  decisions <- mutate(decisions, adj_flowers_to = arrange(flower_data, Region)$Adjusted_Count[To], #get the adjusted flower count of the region moved to for each decision.
+                      Avoid = mapply(FUN = function(to, from){ which(! c(1,2,3) %in% c(to, from))}, to = To, from = From), #get the region avoided by checking the regions transitioned from and the the region transitioned to against the possible regions (1,2,3; not generalizable to more regions)
+  )
+  decisions <- mutate(decisions, adj_flowers_avoid = arrange(flower_data, Region)$Adjusted_Count[Avoid])
+  return(decisions)
 }
 ```
 
@@ -149,7 +176,8 @@ kinkajou_counts <- all_kinkajou_scans_long %>% group_by(Study_night) %>% summari
 kinkajou_counts_region <- all_kinkajou_scans_long %>% group_by(Study_night, Region) %>% summarise(Minutes_Per_Hour = get_kinkMinutesPerHour(Count, categories = 2)) %>% group_by(Region) %>% group_modify(~ transform(.x, Growth = get_growth_index(Minutes_Per_Hour)))
 ```
 ### Transitions
-In addition to the counts of kinkajous in each region, we are interested in how kinkajous transitions between region. Thus, we use the count data to create a transition matrix for each scan, where the number in each cell denotes how many kinkajous moved from the region denoted by the row to the region denoted by the column. These transitions matrices are collated into an array for each study night, where the third dimension is the scan (video-minute). The arrays for each night are stored in a list.
+
+In addition to the counts of kinkajous in each region, we are interested in how kinkajous transition between regions. Thus, we use the count data to create a transition matrix for each scan, where the number in each cell denotes how many kinkajous moved from the region denoted by the row to the region denoted by the column. These transitions matrices are collated into an array for each study night, where the third dimension is the scan (video-minute). The arrays for each night are stored in a list.
 
 ```{r Get_transitions}
 
@@ -197,7 +225,7 @@ transition_arrays[["20"]][,,203]
 
 ## Drone Image Processing and Flower Counts
 
-The second source of data are orthomosiac images of the balsa crown created by stitching together 100 images taken sequentially by a drone flying over the balsa tree. Because, again, these files are large, the data contained in this repository are geopackages containing WGS 84 locations and tree crown region of each flower in the crown. These data were extracted by first stitching together the drone photos from each flight into an orthmosaic (speak to Andreas about details). Second, Alexander Vining used the software QGIS to align each orthomosiac with Google satellite imagery of the study site and hand-delinieate the three regions of the tree crown. Finally, Nele Stockmeyer created spatial points for each flower in the orthomosaic, noting whether the flower appeared to upright or fallen over.
+The second source of data are orthomosiac images of the balsa crown created by stitching together 100 images taken sequentially by a drone flying over the balsa tree. Because, again, these files are large, the data contained in this repository are geopackages containing WGS 84 locations and tree crown region of each flower in the crown. These data were extracted by first stitching together the drone photos from each flight into an orthmosaic (speak to Andreas about details). Second, Alexander Vining used the software QGIS to align each orthomosiac with Google satellite imagery of the study site and hand-delinieate the three regions of the tree crown. Finally, Nele Stockmeyer created spatial points for each flower in the orthomosaic, noting whether the flower appeared to be upright or fallen over.
 
 The following script extracts the spatial coordinates and regions from the geopackage files and stores them as an spatial features (sf) object, with additional annotation for the date and time of the images from which data were collected. The result looks as such . . .
 
@@ -263,7 +291,7 @@ flower_averages <- flower_counts_region %>%
 
 ## Integrated Data-Structures
 
-Lastly, we put all of the nightly kinkajou and flower count data together into a single dataframe so they can be easily visualized jointly. First, we integrate flower counts and residence time data
+Next, we put all of the nightly kinkajou and flower count data together into a single dataframe so they can be easily visualized jointly. First, we integrate flower counts and residence time data
 ```{r combining_data}
 combined_data <- merge(flower_counts, kinkajou_counts, by = "Study_night", all = TRUE)
 
@@ -274,28 +302,17 @@ combined_data_region <- merge(flower_counts_region, kinkajou_counts_region, by =
 
 ### Transition Decisions
 
-Then, we annotate transition decisions with flower count data, setting up the data-frame to enable analysis of decisions with a binary response. In this response, a 1 indicates that the kinkajou moved to the region with the higher adjusted flower count.
+Then, we extract from all transitions those that reflect binary "decisions" (i.e. movement from one region to a different region). We annote these decisions with adjusted flower counts in the region moved to and the region avoided, setting up the data-frame to enable analysis of decisions with a binary response. In this response, a 1 indicates that the kinkajou moved to the region with the higher adjusted flower count.
 
 ```{r transition decisions}
-transition_array <- transition_arrays[["28"]][,,203]
-flower_data <- filter(combined_data_region, Study_night == 28)
-
-get_transition_info <- function(transition_array, flower_data){
-  # input:
-    #transition_array: an array with regions transitioned from in one dimension, regions transitioned to in the second, and time in the third, where each cell gives the number of transitions that occured from region x to region y at time t
-    #flower_data
-  decision_transitions <- apply(transition_array, MARGIN = 3, FUN = function(X) {X *matrix(c(0,1,1,0,                                                                                                                                                              1,0,1,0,                                                                                                                                                              1,1,0,0,
-                                                                                             0,0,0,0),nrow = 4, ncol = 4)} ) %>%#this matrix is multiplied with a transition matrix to remove all transitions that are not from one region to a different region
-    array(dim = dim(transition_array))
-  
-  #extract information about each decision in array
-  decisions <- as.data.frame(which(decision_transitions > 0, arr.ind = TRUE))
-  names(decisions) <- c("From", "To", "Minute")
-  decisions <- mutate(decisions, adj_flowers_choice = arrange(flower_data, Region)$Adjusted_Count[To], #get the adjusted flower count of the region moved to for each decision.
-                      region_avoid = mapply(FUN = function(to, from){ which(! c(1,2,3) %in% c(to, from))}, to = To, from = From), #get the region avoided by checking the regions transitioned from and the the region transitioned to against the possible regions (1,2,3; not generalizable to more regions)
-                      times = mapply(function(data, dim1,dim2,dim3) data[dim1,dim2,dim3], dim1 = From, dim2=To, dim3=Minute, MoreArgs = list(data = decision_transitions)
-  ))
+decisions <- c()
+for(i in seq_along(transition_arrays)){
+  new_decisions <- get_decision_info(transition_array = transition_arrays[[i]], flower_data = filter(combined_data_region, Study_night == names(transition_arrays[i]))) #see helper functions for get_decision_info
+  if(nrow(new_decisions) > 0) new_decisions$Study_night = names(transition_arrays[i])
+  decisions = rbind(decisions, new_decisions)
 }
+decisions <- mutate(decisions, adj_flowers_diff = adj_flowers_to - adj_flowers_avoid)
+decisions <- mutate(decisions, Success = adj_flowers_diff > 0)
 ```
 
 
@@ -318,6 +335,7 @@ ggplot(all_kinkajou_scans_long) +
   theme_classic() +
   labs(y = "Kinkajou Minutes")
 ```
+
 A line plot with study night on the x axis makes clear the periods of time in which observation did not occur. Here, we convert total kinkajou minutes to kinkajou minutes per hour. The data plotted this way highlight temporal trends in overall kinkajou residence in the tree . . .
 
 ```{r kinkajou counts line}
@@ -325,6 +343,7 @@ ggplot(all_kinkajou_scans_long, aes(x = Study_night, y = Count)) + stat_summary(
   theme_classic() +
   labs(title = "Time Spent in Crown", y = "Kinkajou Minutes per Hour")
 ```
+
  . . . and kinkajou residence times by region
 
  
@@ -353,6 +372,7 @@ ggplot(flower_counts, aes(x = Study_night, y = Count)) +
   theme_classic() +
   labs(title = "Average Flower Counts")
 ```
+
 And then the counts by region
 
 ```{r flower counts region}
@@ -360,6 +380,7 @@ ggplot(flower_counts_region, aes(x = Study_night, y = Count, color = Region)) + 
   theme_classic() +
   labs(title = "Flower Counts by Region")
 ```
+
 Because we are interested in how relative changes in flower counts between regions affects kinkajous' movements, we can look at these data another way by adjusting the counts based on expected values. More precisely, this adjusted measure is the observed number of flowers in a region minus the proportion of total flowers observed in that region over the full study times the total number of flowers in the tree that night. This adjusted measure tells us how many more or less flowers are in a region each night than expected based on typical flower distributions in the crown
 
 $$ Adjusted Flower Count_{r,t} = Flower Count_{r,t} - \frac{\sum_{t=1}^{T}Flower Count_{r,t}}{\sum_{r=1}^{R}\sum_{t=1}^{T}Flower Count_{r,t}} * \sum_{r=1}^{R}Flower Count_{r,t} $$
@@ -369,6 +390,7 @@ ggplot(combined_data_region[!is.na(combined_data_region$Count),], aes(x = Study_
   theme_classic() +
   labs(title = "Flower Counts by Region")
 ```
+
 We can see this plot that the adjusted flower count is low in magnitude, meaning the distribution of flowers between regions stays pretty consistent. There is increasing variance in the distribution over time, corresponding with increasing flower counts, but no clear temporal trend in which regions showed greater or lesser concentration of flowers.
 
 ## Kinkajou Residence-Flower Interactions
@@ -389,7 +411,8 @@ ggplot(flower_counts, aes(x = Study_night, y = Growth)) +
        x = "Study Night",
        title = "Growth in Flower Counts and Kinkajous Residence Time")
 ```
- In the plot above, we see an increase with flower counts over time. Kinkajou residence on the other hand does not appear to have a trend until it drops off toward the end of the study. This runs counter to our prediction drawn from Hypothesis A that kinkajous would spend more time in the three when there were more flowers. However, we do not have data on the other resources available in the kinkajous' environment. Toward the end of our study period, other resources would likely have been coming into season, and thus the balsa tree may have been less attractive relative to other resources in the kinkajous'sd environment, despite the its increasing flower count.
+
+In the plot above, we see an increase with flower counts over time. Kinkajou residence on the other hand does not appear to have a trend until it drops off toward the end of the study. This runs counter to our prediction drawn from Hypothesis A that kinkajous would spend more time in the three when there were more flowers. However, we do not have data on the other resources available in the kinkajous' environment. Toward the end of our study period, other resources would likely have been coming into season, and thus the balsa tree may have been less attractive relative to other resources in the kinkajous'sd environment, despite the its increasing flower count.
  
 ```{r analysis_by_region}
 #still need to get a legend working on this
@@ -403,6 +426,7 @@ ggplot(flower_counts_region, aes(x = Study_night, y = Growth)) + geom_line(color
        y = "Growth (%)",
        x = "Study Night")
 ```
+
 Looking at flower counts and residence times by regions, there are not any strongly apparent differences in the interaction between balsa flowers and kinkajous.
 
 ## Kinkajous Transitions
@@ -426,6 +450,16 @@ The long right tail makes it a little difficult to see differences in the lower 
 ```{r}
 heatmap.2(log(all_transitions + 1), Rowv = NA, Colv = NA, xlab = "Region (to)", ylab = "Region (from)", main = "Transition Heatmap - All Nights", cellnote = round(log(all_transitions + 1), 2), trace = "none")
 ```
+
+## Kinkajou Decisions
+
+We look at whether the difference in adjusted counts between regions had any impact on decisions the kinkajous made. Here, a success means the kinkajou went to the region with the greater adjusted flower count. We look at the frequencey of success realtive to the magnitude of difference in adjusted flower count between the regions the kinkajou was choosing between.
+
+```{r decision success plot}
+ggplot(na.omit(decisions)) + geom_point(aes(x = abs(adj_flowers_diff), y = Success, color = interaction(To, Avoid))) +
+  theme_classic()
+```
+By appearance, the adjusted flower count does not have an effect on kinkajou decisions
 
 ## Summary Statistics
 
@@ -525,7 +559,7 @@ save(flowers_regression_all_bayes, file = "../Results/flower_count_MCMCs.Rdata")
 summary(flowers_regression_all_bayes)
 ```
 As expected, the results of the bayesian regression closely fit the frequentist approach. For this model, we plot the mean and 89%CI for posterior predictions by study_night.
-Queation for collaborators: Is it more interesting to plot the Predictive CIs like this, or a sampling of regressions from the posterior
+Question for collaborators: Is it more interesting to plot the Predictive CIs like this, or a sampling of regressions from the posterior
 
 ```{r posterior plotting1}
 load("../Results/flower_count_MCMCs.Rdata")
@@ -632,6 +666,7 @@ correlations <- combined_data_region %>%
 
 corrplot(correlations, method = "color")
 ```
+
 This correlogram reveals a negative relationship between flower counts in a region and residence time in that region. However, this likely reflects the pattern of residence time and flower counts in the whole tree. We are interested in how the density of flowers relative to other regions affects residence times. For this, we look at the correlation between adjusted flower count and residence time.
 
 ```{r proportion correlations}
@@ -644,6 +679,7 @@ correlations_proportion <- combined_data_region %>%
   
 corrplot(correlations_proportion, method = "color")
 ```
+
 This correllelation between flower count and residence time is near zero in region 1, in region two it is negative and in region 3 it is positive.
 
 ### bayesian methods
@@ -663,7 +699,9 @@ residence_by_region_regression_model <- brm(Minutes_Per_Hour ~ Adjusted_Count + 
 save(residence_by_region_regression_model, file = "../Results/residence_by_region_MCMCs.Rdata")
 summary(residence_by_region_regression_model)
 ```
-Bt plotting the posterior distribution of parameter coeficcients, 
+
+By plotting the posterior distribution of parameter coeficcients, we can see the neither the total number of flowers nor the adjusted counts had a clear impact on kinkajous residence times.
+
 ```{r posterior plotting3}
 load("../Results/residence_by_region_MCMCs.Rdata")
 #Get predictions from each sample of the posterior for each night in the study
