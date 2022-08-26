@@ -270,7 +270,7 @@ flower_counts <- all_upflowers %>%
   group_by(Study_night) %>% #where there were good photos for both AM and PM, we will use the mean flower count which is achieved by grouping and summariying
   summarise(Count = mean(Count)) %>% 
   transform(Growth = get_growth_index(Count)) %>% #used to visually compare changes in flower count to changes in kinkajou residency without bias
-  mutate(Density = Count/(sum(st_area(region_shapes))))
+  mutate(Density = as.numeric(Count/(sum(st_area(region_shapes)))))
 
 flower_counts_region <- all_upflowers %>% mutate(Study_night = Study_night - (Time == "AM")) %>% #study night is based on date, but we want to match AM recordings to previous PM recordings, so we subtract one from all AM study night values
   group_by(Study_night, Region, Time) %>% 
@@ -280,7 +280,7 @@ flower_counts_region <- all_upflowers %>% mutate(Study_night = Study_night - (Ti
   group_by(Region) %>% group_modify(~ transform(.x, Growth = get_growth_index(Count))) %>% 
   ungroup()
 
-flower_counts_region <- flower_counts_region %>% mutate(Density = Count/(st_area(region_shapes)[Region])) #divide flower count by area of region to get flower density
+flower_counts_region <- flower_counts_region %>% mutate(Density = as.numeric(Count/(st_area(region_shapes)[Region]))) #divide flower count by area of region to get flower density
 ```
 
 ### Adjusted Flower Counts
@@ -421,6 +421,8 @@ ggplot(flower_counts_region, aes(x = Study_night, y = Relative_Density, color = 
   theme_classic() +
   geom_line(aes(y = Expected_Relative_Density), linetype = "dashed") +
   labs(title = "Relative Densities by Region")
+
+#need to add legend for Observed (solid) and Expected (Dashed)
 ```
 
 ## Kinkajou Residence-Flower Interactions
@@ -442,7 +444,7 @@ ggplot(flower_counts, aes(x = Study_night, y = Growth)) +
        title = "Growth in Flower Counts and Kinkajous Residence Time")
 ```
 
-In the plot above, we see an increase with flower counts over time. Kinkajou residence on the other hand does not appear to have a trend until it drops off toward the end of the study. This runs counter to our prediction drawn from Hypothesis A that kinkajous would spend more time in the three when there were more flowers. However, we do not have data on the other resources available in the kinkajous' environment. Toward the end of our study period, other resources would likely have been coming into season, and thus the balsa tree may have been less attractive relative to other resources in the kinkajous'sd environment, despite the its increasing flower count.
+In the plot above, we see an increase with flower counts over time. Kinkajou residence on the other hand does not appear to have a trend until it drops off toward the end of the study. This runs counter to our prediction drawn from Hypothesis A that kinkajous would spend more time in the three when there were more flowers. However, we do not have data on the other resources available in the kinkajous' environment. Toward the end of our study period, other resources would likely have been coming into season, and thus the balsa tree may have been less attractive relative to other resources in the kinkajous' environment, despite the its increasing flower count.
  
 ```{r analysis_by_region}
 #still need to get a legend working on this
@@ -512,7 +514,7 @@ mean_flower_counts_by_region <- group_by(flower_counts_region, Region) %>% summa
 mean_flower_counts_by_region$Region <- mean_flower_counts_by_region$Region %>% as.character()
 mean_flower_counts_by_region <- mean_flower_counts_by_region %>% rbind(c("all", mean_flowers_counts, var_flower_counts))
 mean_flower_counts_by_region$Units <- "Flowers"
-mean_flower_counts_by_region
+mean_flower_counts_by_region 
 
 combined_summary_statistics <- rbind(mean_residence_by_region, mean_flower_counts_by_region)
 combined_summary_statistics
@@ -526,27 +528,27 @@ paste("mean kinkajou residence in the entire tree, minutes per hour", mean_resid
 
 # Statistical Analysis
 
-## Flower Count by Night
+## Flower Density by Night
 
 ### Frequentist Linear Model
 
-To begin analyzing the important patterns in the data statistically, we first want to isolate the temporal trends in flower count. We start with a simple linear model, which presumes the number of flowers in the tree steadily increases (or decreases) over the course of the study. For now, we fit the model using both a frequentist and Bayesian model, allowing comparison. We expect these models to yield the same results, but later will shift entirely to a bayesian framework, which will be more robust to our small sample size and the non-independance of data (i.e. it should more accurately determine the uncertainty in the model, and thus is less likely to result in false conclusions)
+To begin analyzing the important patterns in the data statistically, we first want to isolate the temporal trends in flower density. We use density rather than count to enhance comparability with analyses by region, which vary in area. We start with a simple linear model, which presumes the number of flowers in the tree steadily increases (or decreases) over the course of the study. For now, we fit the model using both a frequentist and Bayesian model, allowing comparison. We expect these models to yield the same results, but later will shift entirely to a bayesian framework, which will be more robust to our small sample size and the non-independance of data (i.e. it should more accurately determine the uncertainty in the model, and thus is less likely to result in false conclusions)
 
 ```{r flower linear regression}
-#predicting flower counts based on study night using frequentist methods
-flowers_regression_all <- lm(data = select(as.data.frame(flower_counts), !geom), formula = Count ~ Study_night)
+#predicting flower density based on study night using frequentist methods
+flowers_regression_all <- lm(data = select(as.data.frame(flower_counts), !geom), formula = as.numeric(Density) ~ Study_night)
 summary(flowers_regression_all)
 ```
-We find an intercept of -21.4 in this model, which is clearly biologically implausible (the tree can not have negative flowers), but is reasonable statisitcally given that we did not start collecting data on flowers until day 12, when flowers first began opening. Thus, the model is only fitted to the period when flowers are appearing in the tree, but extends several days before that. Plotting the regression line through the data makes this clear. 
+We find an intercept of -0.035 in this model, which is clearly biologically implausible (the tree can not have negative flowers/m^2), but is reasonable statistically given that we did not start collecting data on flowers until day 12, when flowers first began opening. Thus, the model is only fitted to the period when flowers are appearing in the tree, but extends several days before that. Plotting the regression line through the data makes this clear. 
 
 More interestingly, the fixed effect of study night is clearly positive, with an estimated average increase of 4.4 flowers per night of the study.
 
 ```{r}
 plot(y = predict(flowers_regression_all, newdata = data.frame(Study_night = 0:max(flower_counts$Study_night))), x = 0:max(flower_counts$Study_night), type = "l",
      xlab = "Study Night",
-     ylab = "Flower Count",
-     main = "Full Tree Flower Count Regression")
-points(x = flower_counts$Study_night, y = flower_counts$Count)
+     ylab = "Flower Density",
+     main = "Full Tree Flower Density Regression")
+points(x = flower_counts$Study_night, y = as.numeric(flower_counts$Density))
 ```
 
 We can also plot the residuals by night to examine how the model performs over the course of the study. This reveals additional variance toward the end of the study. This unnacounted for structure in the variance is unlikely to strongly affect the assumptions of this linear model, but would be accounted for in a Bayesian approach.
@@ -555,7 +557,7 @@ We can also plot the residuals by night to examine how the model performs over t
 plot(x = flower_counts$Study_night, y = flowers_regression_all$residuals,
      xlab = "Study Night",
      ylab = "Residuals",
-     main = "Full Tree Flower Count Residuals")
+     main = "Full Tree Flower Density Residuals")
 ```
 
 The structure of the residuals can be further analyzed by a q-q plot
@@ -572,19 +574,19 @@ We then fit the same model using a Bayesian procedure.
 ```{r flower bayes regression, eval = FALSE}
 #bayesian methods
 prior1 <- c(
-  prior(normal(0,20), class = Intercept), #prior on intercept has wide variance, given that previous studies indicate that can be dozens of flowers in the tree, but we began collecting data at the begininning of the season. Perhaps the prior mean should be greater than 0)
-  prior(normal(0,5), class = b, coef = Study_night), #slope prior is centered at 0 as we don't assume apriori that we will see changes in flower counts over study nights. Variance is less than the intercept, as we expect growth to be only a portion of the typical number of flowers
+  prior(normal(0,5), class = Intercept), #prior on intercept has wide variance, given that previous studies indicate that can be dozens of flowers in the tree. Perhaps the prior mean should be greater than 0, but we began collecting flowers after the start of the flowering season and using a linear model means we may need a negative intercept to accurately capture the growth dynamics during the period where we do have data.
+  prior(normal(0,1), class = b, coef = Study_night), #slope prior is centered at 0 as we don't assume apriori that we will see changes in flower counts over study nights. Variance is less than the intercept, as we expect growth to be only a portion of the typical number of flowers
   prior(cauchy(0,10), class = sigma) #standard prior for variance
 )
 
-flowers_regression_all_bayes <- brm(Count ~ Study_night,
+flowers_regression_all_bayes <- brm(as.numeric(Density) ~ Study_night,
                                     data = select(as.data.frame(flower_counts), !geom), 
                                     family = "gaussian",
                                     prior = prior1,
                                     warmup =1000, iter = 2000,
                                     refresh = 0)
 
-save(flowers_regression_all_bayes, file = "../Results/flower_count_MCMCs.Rdata")
+save(flowers_regression_all_bayes, file = "../Results/flower_density_MCMCs.Rdata")
 
 summary(flowers_regression_all_bayes)
 ```
@@ -592,7 +594,7 @@ As expected, the results of the bayesian regression closely fit the frequentist 
 Question for collaborators: Is it more interesting to plot the Predictive CIs like this, or a sampling of regressions from the posterior
 
 ```{r posterior plotting1}
-load("../Results/flower_count_MCMCs.Rdata")
+load("../Results/flower_density_MCMCs.Rdata")
 #Get predictions from each sample of the posterior for each night in the study
 post_predictions <- brms::posterior_predict(flowers_regression_all_bayes, list(Study_night = 1:max(flower_counts$Study_night)))
 #determine and plot average predictions with 89% CIs
@@ -600,7 +602,7 @@ predictive_CIs <- list(mean_pred = apply(post_predictions, MARGIN = 2, mean),
                        upper = apply(post_predictions, MARGIN = 2, quantile, 0.945),
                        lower = apply(post_predictions, MARGIN = 2, quantile, 0.055))
 {
-  plot(x = flower_counts$Study_night, y = flower_counts$Count, xlim = c(0, max(flower_counts$Study_night)), ylim = c(min(predictive_CIs[[3]]), max(predictive_CIs[[2]])))
+  plot(x = flower_counts$Study_night, y = as.numeric(flower_counts$Density), xlim = c(0, max(flower_counts$Study_night)), ylim = c(min(predictive_CIs[[3]]), max(predictive_CIs[[2]])))
   lines(x = seq_along(predictive_CIs[[1]]), y = predictive_CIs[[1]], type = "l", lty = "dashed")
   lines(x = seq_along(predictive_CIs[[2]]), y = predictive_CIs[[2]], type = "l")
   lines(x = seq_along(predictive_CIs[[3]]), y = predictive_CIs[[3]], type = "l")
@@ -618,7 +620,7 @@ Next, we look at the pattern of kinkajou residence times in the full tree crown.
 ```{r residence time regression}
 #predicting kinkajou residence time based on study night and adjusted flower count
 
-residence_regression_all <- lm(data = combined_data, formula = Minutes_Per_Hour ~ Study_night + Count)
+residence_regression_all <- lm(data = combined_data, formula = Minutes_Per_Hour ~ Study_night + Density)
 summary(residence_regression_all)
 
 #res_reg_all<-lm(data = combined_data, formula = Minutes_Per_Hour ~ Study_night)
@@ -647,13 +649,13 @@ qqnorm(residence_regression_all$residuals/Sres_all)
 ```{r kinkajou bayes regression}
 #bayesian methods
 prior2 <- c(
-  prior(normal(0,20), class = Intercept), #prior on intercept has wide variance, given that previous studies indicate that can be dozens of flowers in the tree, but we began collecting data at the begininning of the season. Perhaps the prior mean should be greater than 0)
-  prior(normal(0,5), class = b, coef = Study_night), #slope prior is centered at 0 as we don't assume apriori that we will see changes in flower counts over study nights. Variance is less than the intercept, as we expect growth to be only a portion of the typical number of flowers
-  prior(normal(0,5), class = b, coef = Count),
+  prior(normal(0,20), class = Intercept), #data for this model will be centered based on the approximate mean residence time per hour, hence a prior centered on zero. Variance of 20 minutes creates a conservative prior that strongly discounts the possibility that the typical residence time has more than one kinkajou spending an entire obervation period in the tree)
+  prior(normal(0,10), class = b, coef = Study_night), #slope prior is centered at 0 as we don't assume apriori that we will see changes in residence time over study nights. Variance is less than the intercept, as we expect growth to be only a portion of the typical residence time
+  prior(normal(0,20), class = b, coef = Density), #slope prior is centered at 0 as we don't assume apriori that we will see changes in residence time with changing flower density. Variance is high, as an increase in 1 flower per meter would represent a lot of additional flowers in the region, and we allow for the possibility this could have a major impact on kinkajou behavior
   prior(cauchy(0,10), class = sigma) #standard prior for variance
 )
 
-kinks_regression_all_bayes <- brm(Minutes_Per_Hour ~ Study_night + Count,
+kinks_regression_all_bayes <- brm(Minutes_Per_Hour ~ Study_night + Density,
                                     data = select(as.data.frame(combined_data), !geometry), 
                                     family = "gaussian",
                                     prior = prior2,
@@ -664,7 +666,7 @@ save(kinks_regression_all_bayes, file = "../Results/residence_time_full_tree_MCM
 summary(kinks_regression_all_bayes)
 ```
 
-As expected, the results of the bayesian regression closely fit the frequentist approach. For this model, we visualize the posterior distributions of the co-efficients for Study Night and Flower Count.
+As expected, the results of the bayesian regression closely fit the frequentist approach. For this model, we visualize the posterior distributions of the co-efficients for Study Night and Flower Density.
 
 ```{r posterior plotting2}
 load("../Results/residence_time_full_tree_MCMCs.Rdata")
@@ -673,12 +675,14 @@ post_samples <- brms::as_draws_df(kinks_regression_all_bayes)
 #determine and plot average predictions with 89% CIs
 post_samples %>% 
   pivot_longer(b_Study_night:lp__, names_to = "Coefficient_Type", values_to = "Estimated_Effect") %>%
-  filter(Coefficient_Type %in% c("b_Study_night", "b_Count")) %>%
+  filter(Coefficient_Type %in% c("b_Study_night", "b_Density")) %>%
   ggplot() + 
   stat_density_ridges(aes(x = Estimated_Effect, y = Coefficient_Type), scale = 1, quantile_lines = TRUE, quantiles = c(0.055, 0.945)) +
   geom_vline(xintercept = 0, color = "red", linetype = "dashed") +
   theme_classic() +
   labs(title = "Posterior Distribution of Coefficients on Kinkajou Residence Time")
+
+#Using Density instead of count leads to wide posterior (increase of 1 flower/meter^2 is much more than 1 flower). Consider scaling?
 ```
 
 Zero is contained with the 89% credible interval of the posterior distributions of either coefficient, thus we do not have sufficient evidence to claim that either the study night or the flower count have an appreciable effect on the nightly residence times of kinkajous in the balsa crown.
@@ -697,30 +701,59 @@ correlations <- combined_data_region %>%
 corrplot(correlations, method = "color")
 ```
 
-This correlogram reveals a negative relationship between flower counts in a region and residence time in that region. However, this likely reflects the pattern of residence time and flower counts in the whole tree. We are interested in how the density of flowers relative to other regions affects residence times. For this, we look at the correlation between adjusted flower count and residence time.
+This correlogram reveals a negative relationship between flower counts in a region and residence time in that region. However, kinkajous may be more attuned to flower density than flower count. We look at the same plot for density rather than count.
 
-```{r proportion correlations}
+```{r density correlations}
 correlations_proportion <- combined_data_region %>% 
-  mutate(Count_proportion = Count/Total_Flowers) %>%
-  select(Count_proportion, Region, Minutes_Per_Hour, Total_Flowers, Study_night) %>% 
-  pivot_wider(names_from = Region, values_from = c(Count_proportion, Minutes_Per_Hour)) %>% 
+  select(Density, Region, Minutes_Per_Hour, Total_Flowers, Study_night) %>% 
+  pivot_wider(names_from = Region, values_from = c(Density, Minutes_Per_Hour)) %>% 
   select(!Study_night) %>%
   cor(use = "complete.obs")
   
 corrplot(correlations_proportion, method = "color")
 ```
 
-This correllelation between flower count and residence time is near zero in region 1, in region two it is negative and in region 3 it is positive.
+This correllelation between flower density and residence time is also negative.
+
+Next we consider how the density of flowers in a region, relative to other regions on the same night, guides kinkajou residence times. This measure removes the effect of total flower counts across the whole tree on residence time (which we know is negative from previous analysis) and focuses in on changes in nightly distributions.
+
+```{r density correlations}
+correlations_proportion <- combined_data_region %>% 
+  select(Relative_Density, Region, Minutes_Per_Hour, Total_Flowers, Study_night) %>% 
+  pivot_wider(names_from = Region, values_from = c(Relative_Density, Minutes_Per_Hour)) %>% 
+  select(!Study_night) %>%
+  cor(use = "complete.obs")
+  
+corrplot(correlations_proportion, method = "color")
+```
+
+The correlations between relative density and residence time are little more interesting. We see that when the density of flowers increases in region 3, residence times increase across all regions. Conversely, residence time in all regions is negatively correlated to the density in region 1. Looking back at the the relative densities across nights there is no clear temporal trend that could be driving this trend (along with decreasing kinkajou residence over the study). It also seems unlikely that the relative densities drive residence times across the whole tree - we would expect higher density in one regions to *decrease* residence time in other regions. We will need a formal model, however, to determine whther this trend falls outside the level of correlation we might expect by chance.
+
+Finally, we consider whether the expected relative density (the average relative density across all previous nights) shapes residence times. This would reflects kinkajous relying more on previous information about the distribution of flowers to guide their behavior, and relying less on an ability to determine the actual distribution of flowers on a given night.
+
+```{r density expectaion correlations}
+correlations_proportion <- combined_data_region %>% 
+  select(Expected_Relative_Density, Region, Minutes_Per_Hour, Total_Flowers, Study_night) %>% 
+  pivot_wider(names_from = Region, values_from = c(Expected_Relative_Density, Minutes_Per_Hour)) %>% 
+  select(!Study_night) %>%
+  cor(use = "complete.obs")
+  
+corrplot(correlations_proportion, method = "color")
+```
+
+Interestingly, the effects of expected relative density are largely opposite those from observed relative density. Greater expected relative density in region 1 increased residence time across all regions, while greater expected relative density in region 2 decreased residence time across all regions, and in region 3 it had little effect. 
+
+I don't see an easy way to parse out these trends. The best explanation I can offer at this point is that expectations are inherently shaped by all preceding values. Thus high relative densities toward the start of the study might result in positive correlation between relative density and residence time and also lead to higher expected densities toward the end of the study, when residence times are generally lower (and thus a negative correlation between expected relative density and residence time). This leads to some questions about whether (and how) the structurally inherent temporal autocorrlation in expected relative density should be accounted for in a model.
 
 ### bayesian methods
 
-We use a model to measure the impact of both regional flower counts and adjusted flower counts on kinkajou residence time. In addition to these two predictor variables, this model includes a fixed effect of each region on residence time. As of right now, this model uses default priors from get_prior, which are probably too wide.
+We use a model to measure the impact of both total flowers in the tree and regional densities on kinkajou residence time. In addition to these two predictor variables, this model includes a fixed effect of each region on residence time. As of right now, this model uses default priors from get_prior, which are probably too wide.
 ```{r regional analysis bayes}
-prior3 <- get_prior(Minutes_Per_Hour ~ Adjusted_Count + Region + Total_Flowers,
+prior3 <- get_prior(Minutes_Per_Hour ~ Density + Region + Total_Flowers,
                                             data = combined_data_region, 
                                             family = "gaussian")
 
-residence_by_region_regression_model <- brm(Minutes_Per_Hour ~ Adjusted_Count + Region + Total_Flowers,
+residence_by_region_regression_model <- brm(Minutes_Per_Hour ~ Density + Region + Total_Flowers,
                                             data = combined_data_region, 
                                             family = "gaussian",
                                             prior = prior3,
@@ -742,7 +775,7 @@ post_samples$Region3 <- post_samples$Region3 + post_samples$Region1
 #determine and plot average predictions with 89% CIs
 post_samples %>% 
   pivot_longer(Region1:lp__, names_to = "Coefficient_Type", values_to = "Estimated_Effect") %>%
-  filter(Coefficient_Type %in% c("Region1", "Region2", "Region3", "b_Total_Flowers", "b_Adjusted_Count")) %>%
+  filter(Coefficient_Type %in% c("Region1", "Region2", "Region3", "b_Total_Flowers", "b_Density")) %>%
   ggplot() + 
   stat_density_ridges(aes(x = Estimated_Effect, y = Coefficient_Type), scale = 1, quantile_lines = TRUE, quantiles = c(0.055, 0.945)) + #the quantile lines on total flowers look wrong . . .
   geom_vline(xintercept = 0, color = "red", linetype = "dashed") +
