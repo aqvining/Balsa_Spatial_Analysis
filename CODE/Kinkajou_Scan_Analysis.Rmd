@@ -270,7 +270,7 @@ flower_counts <- all_upflowers %>%
   group_by(Study_night) %>% #where there were good photos for both AM and PM, we will use the mean flower count which is achieved by grouping and summariying
   summarise(Count = mean(Count)) %>% 
   transform(Growth = get_growth_index(Count)) %>% #used to visually compare changes in flower count to changes in kinkajou residency without bias
-  mutate(Density = as.numeric(Count/(sum(st_area(region_shapes)))))
+  mutate(Density = 10 * as.numeric(Count/(sum(st_area(region_shapes))))) #multiply by ten to get flowers per 10 m^2, which will bring down the variance on estimated effect sizes
 
 flower_counts_region <- all_upflowers %>% mutate(Study_night = Study_night - (Time == "AM")) %>% #study night is based on date, but we want to match AM recordings to previous PM recordings, so we subtract one from all AM study night values
   group_by(Study_night, Region, Time) %>% 
@@ -280,7 +280,7 @@ flower_counts_region <- all_upflowers %>% mutate(Study_night = Study_night - (Ti
   group_by(Region) %>% group_modify(~ transform(.x, Growth = get_growth_index(Count))) %>% 
   ungroup()
 
-flower_counts_region <- flower_counts_region %>% mutate(Density = as.numeric(Count/(st_area(region_shapes)[Region]))) #divide flower count by area of region to get flower density
+flower_counts_region <- flower_counts_region %>% mutate(Density = 10 * as.numeric(Count/(st_area(region_shapes)[Region]))) #divide flower count by area of region to get flower density
 ```
 
 ### Adjusted Flower Counts
@@ -717,7 +717,7 @@ This correllelation between flower density and residence time is also negative.
 
 Next we consider how the density of flowers in a region, relative to other regions on the same night, guides kinkajou residence times. This measure removes the effect of total flower counts across the whole tree on residence time (which we know is negative from previous analysis) and focuses in on changes in nightly distributions.
 
-```{r density correlations}
+```{r relative density correlations}
 correlations_proportion <- combined_data_region %>% 
   select(Relative_Density, Region, Minutes_Per_Hour, Total_Flowers, Study_night) %>% 
   pivot_wider(names_from = Region, values_from = c(Relative_Density, Minutes_Per_Hour)) %>% 
@@ -747,6 +747,8 @@ I don't see an easy way to parse out these trends. The best explanation I can of
 
 ### bayesian methods
 
+#### Region Density
+
 We use a model to measure the impact of both total flowers in the tree and regional densities on kinkajou residence time. In addition to these two predictor variables, this model includes a fixed effect of each region on residence time. As of right now, this model uses default priors from get_prior, which are probably too wide.
 ```{r regional analysis bayes}
 prior3 <- get_prior(Minutes_Per_Hour ~ Density + Region + Total_Flowers,
@@ -762,6 +764,7 @@ residence_by_region_regression_model <- brm(Minutes_Per_Hour ~ Density + Region 
 save(residence_by_region_regression_model, file = "../Results/residence_by_region_MCMCs.Rdata")
 summary(residence_by_region_regression_model)
 ```
+# Brendan recomends using a 0 conditional (?) gamma distribution. Look at papers with Joan Silk for an example
 
 By plotting the posterior distribution of parameter coeficcients, we can see the neither the total number of flowers nor the adjusted counts had a clear impact on kinkajous residence times.
 
@@ -785,4 +788,45 @@ post_samples %>%
        x = "Estimate Effect",
        y = "Coefficient")
 ```
+#### Relative Region Density
 
+Because region densitites are very correlated with total flowers, it is probably better to use a predictor that normalizes the regional densities. Here, we get relative region densities by subtracting the density of flowers in the full tree from the density of flowers in each region on that night.
+
+```{r regional analysis relative density}
+prior4 <- get_prior(Minutes_Per_Hour ~ Relative_Density + Region + Total_Flowers,
+                                            data = combined_data_region, 
+                                            family = "gaussian")
+
+residence_by_region_relative_density_regression_model <- brm(Minutes_Per_Hour ~ Relative_Density + Region + Total_Flowers,
+                                            data = combined_data_region, 
+                                            family = "gaussian",
+                                            prior = prior3,
+                                            warmup =1000, iter = 2000,
+                                            refresh = 0)
+save(residence_by_region_relative_density_regression_model, file = "../Results/residence_by_region_MCMCs_relative_density.Rdata")
+summary(residence_by_region_relative_density_regression_model)
+```
+# Brendan recomends using a 0 conditional (?) gamma distribution. Look at papers with Joan Silk for an example
+
+By plotting the posterior distribution of parameter coeficcients, we can see the neither the total number of flowers nor the adjusted counts had a clear impact on kinkajous residence times.
+
+```{r posterior plotting4}
+load("../Results/residence_by_region_MCMCs_relative_density.Rdata")
+#Get predictions from each sample of the posterior for each night in the study
+post_samples <- brms::as_draws_df(residence_by_region_relative_density_regression_model)
+names(post_samples)[c(1,3,4)] <- c("Region1", "Region2", "Region3") #Rename from Intercept for clarity
+post_samples$Region2 <- post_samples$Region2 + post_samples$Region1 #convert estimates of Region 2 coefficient to intercept estimate for region 2
+post_samples$Region3 <- post_samples$Region3 + post_samples$Region1
+#determine and plot average predictions with 89% CIs
+post_samples %>% 
+  pivot_longer(Region1:lp__, names_to = "Coefficient_Type", values_to = "Estimated_Effect") %>%
+  filter(Coefficient_Type %in% c("Region1", "Region2", "Region3", "b_Total_Flowers", "b_Relative_Density")) %>%
+  ggplot() + 
+  stat_density_ridges(aes(x = Estimated_Effect, y = Coefficient_Type), scale = 1, quantile_lines = TRUE, quantiles = c(0.055, 0.945)) + #the quantile lines on total flowers look wrong . . .
+  geom_vline(xintercept = 0, color = "red", linetype = "dashed") +
+  theme_classic() +
+  xlim(-10, 25) +
+  labs(title = "Posterior Distribution of Coefficients on Kinkajou-Minutes",
+       x = "Estimate Effect",
+       y = "Coefficient")
+```
