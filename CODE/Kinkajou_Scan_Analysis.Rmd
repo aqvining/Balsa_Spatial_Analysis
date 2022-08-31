@@ -42,6 +42,7 @@ library(nlme)
 library(brms)
 library(corrplot)
 library(units)
+library(rethinking)
 ```
 
 ```{r helper_functions, include=FALSE}
@@ -280,7 +281,7 @@ flower_counts_region <- all_upflowers %>% mutate(Study_night = Study_night - (Ti
   group_by(Region) %>% group_modify(~ transform(.x, Growth = get_growth_index(Count))) %>% 
   ungroup()
 
-flower_counts_region <- flower_counts_region %>% mutate(Density = 10 * as.numeric(Count/(st_area(region_shapes)[Region]))) #divide flower count by area of region to get flower density
+flower_counts_region <- flower_counts_region %>% mutate(Density = 10 * as.numeric(Count/(st_area(region_shapes)[Region]))) #divide flower count by area of region to get flower density. COnvert to flowers/10m^2 to manage effect sizes
 ```
 
 ### Adjusted Flower Counts
@@ -312,7 +313,8 @@ combined_data <- merge(flower_counts, kinkajou_counts, by = "Study_night", all =
 
 combined_data_region <- merge(flower_counts_region, kinkajou_counts_region, by = c("Study_night","Region") , all = TRUE) %>%
   mutate(Total_Flowers = combined_data$Count[pmatch(Study_night, combined_data$Study_night, duplicates.ok = TRUE)]) %>%
-  mutate(Adjusted_Count = Count - (Total_Flowers * flower_averages$proportion[Region]))
+  mutate(Adjusted_Count = Count - (Total_Flowers * flower_averages$proportion[Region]),
+         Average_Density = 10 * Total_Flowers/sum(st_area(region_shapes))) #get desnity in flowers/10m^2
 ```
 
 ### Transition Decisions
@@ -751,11 +753,11 @@ I don't see an easy way to parse out these trends. The best explanation I can of
 
 We use a model to measure the impact of both total flowers in the tree and regional densities on kinkajou residence time. In addition to these two predictor variables, this model includes a fixed effect of each region on residence time. As of right now, this model uses default priors from get_prior, which are probably too wide.
 ```{r regional analysis bayes}
-prior3 <- get_prior(Minutes_Per_Hour ~ Density + Region + Total_Flowers,
+prior3 <- get_prior(Minutes_Per_Hour ~ Density + Region + Average_Density,
                                             data = combined_data_region, 
                                             family = "gaussian")
 
-residence_by_region_regression_model <- brm(Minutes_Per_Hour ~ Density + Region + Total_Flowers,
+residence_by_region_regression_model <- brm(Minutes_Per_Hour ~ Density + Region + Average_Density,
                                             data = combined_data_region, 
                                             family = "gaussian",
                                             prior = prior3,
@@ -774,16 +776,16 @@ load("../Results/residence_by_region_MCMCs.Rdata")
 post_samples <- brms::as_draws_df(residence_by_region_regression_model)
 names(post_samples)[c(1,3,4)] <- c("Region1", "Region2", "Region3") #Rename from Intercept for clarity
 post_samples$Region2 <- post_samples$Region2 + post_samples$Region1 #convert estimates of Region 2 coefficient to intercept estimate for region 2
-post_samples$Region3 <- post_samples$Region3 + post_samples$Region1
+post_samples$Region3 <- post_samples$Region3 + post_samples$Region1 #convert estimates of Region 3 coefficient to intercept estimate for region 3
 #determine and plot average predictions with 89% CIs
 post_samples %>% 
   pivot_longer(Region1:lp__, names_to = "Coefficient_Type", values_to = "Estimated_Effect") %>%
-  filter(Coefficient_Type %in% c("Region1", "Region2", "Region3", "b_Total_Flowers", "b_Density")) %>%
+  filter(Coefficient_Type %in% c("Region1", "Region2", "Region3", "b_Average_Density", "b_Density")) %>%
   ggplot() + 
   stat_density_ridges(aes(x = Estimated_Effect, y = Coefficient_Type), scale = 1, quantile_lines = TRUE, quantiles = c(0.055, 0.945)) + #the quantile lines on total flowers look wrong . . .
   geom_vline(xintercept = 0, color = "red", linetype = "dashed") +
   theme_classic() +
-  xlim(-10, 25) +
+  #xlim(-10, 25) + #messes up quantile lines
   labs(title = "Posterior Distribution of Coefficients on Kinkajou-Minutes",
        x = "Estimate Effect",
        y = "Coefficient")
@@ -793,18 +795,28 @@ post_samples %>%
 Because region densitites are very correlated with total flowers, it is probably better to use a predictor that normalizes the regional densities. Here, we get relative region densities by subtracting the density of flowers in the full tree from the density of flowers in each region on that night.
 
 ```{r regional analysis relative density}
-prior4 <- get_prior(Minutes_Per_Hour ~ Relative_Density + Region + Total_Flowers,
-                                            data = combined_data_region, 
-                                            family = "gaussian")
+#bayesian methods
 
-residence_by_region_relative_density_regression_model <- brm(Minutes_Per_Hour ~ Relative_Density + Region + Total_Flowers,
-                                            data = combined_data_region, 
-                                            family = "gaussian",
-                                            prior = prior3,
-                                            warmup =1000, iter = 2000,
-                                            refresh = 0)
-save(residence_by_region_relative_density_regression_model, file = "../Results/residence_by_region_MCMCs_relative_density.Rdata")
-summary(residence_by_region_relative_density_regression_model)
+
+residence_by_region_relative_density_stan_fit <- 
+  ulam(
+    alist(
+      Minutes_Per_Hour ~ dzagamma2(p, mu, scale),
+      logit(p) <-  ap + ap_region[Region] + bp_Average_Density * Average_Density + bp_Relative_Density * Relative_Density,	
+      log(mu)  <-  am + am_region[Region] + bm_Average_Density * Average_Density + bm_Relative_Density * Relative_Density,
+      #priors below
+      c(ap,am) ~ dnorm(0,2), #prior centers initial probability of 0 residence time at 50% and residence time when a visit occurs at 1 minute. 
+      c(ap_Region,am_Region)[Region] ~ dnorm(0, 2),
+      c(bp_Average_Density,bm_Average_Density) ~ dnorm(0, 2),
+      c(bp_Relative_Density,bp_Relative_Density) ~ dnorm(0, 2),	
+      scale ~ dcauchy(0,2)
+    ),
+    data = na.omit(combined_data_region), cores=4 , chains=4 , warmup=1500, iter=3000, 
+constraints=list(scale="lower=0")
+  )
+
+save(residence_by_region_relative_density_stan_fit, file = "../Results/residence_by_region_MCMCs_relative_density.Rdata")
+summary(residence_by_region_relative_density_stan_fit)
 ```
 # Brendan recomends using a 0 conditional (?) gamma distribution. Look at papers with Joan Silk for an example
 
@@ -820,7 +832,7 @@ post_samples$Region3 <- post_samples$Region3 + post_samples$Region1
 #determine and plot average predictions with 89% CIs
 post_samples %>% 
   pivot_longer(Region1:lp__, names_to = "Coefficient_Type", values_to = "Estimated_Effect") %>%
-  filter(Coefficient_Type %in% c("Region1", "Region2", "Region3", "b_Total_Flowers", "b_Relative_Density")) %>%
+  filter(Coefficient_Type %in% c("Region1", "Region2", "Region3", "b_Total_Flowers", "b_Relative_sDensity")) %>%
   ggplot() + 
   stat_density_ridges(aes(x = Estimated_Effect, y = Coefficient_Type), scale = 1, quantile_lines = TRUE, quantiles = c(0.055, 0.945)) + #the quantile lines on total flowers look wrong . . .
   geom_vline(xintercept = 0, color = "red", linetype = "dashed") +
