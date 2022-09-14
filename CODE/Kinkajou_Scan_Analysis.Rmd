@@ -48,6 +48,7 @@ library(tidybayes)
 library(tidybayes.rethinking)
 library(vioplot)
 library(tibble)
+library(ggforce)
 ```
 
 ```{r helper_functions, include=FALSE}
@@ -95,12 +96,78 @@ get_decision_info <- function(transition_array, flower_data){
                                  FUN = rep, 
                                  times = mapply(function(data, dim1,dim2,dim3) data[dim1,dim2,dim3], dim1 = decisions$dim1, dim2=decisions$dim2, dim3=decisions$dim3, MoreArgs = list(data = decision_transitions))))
   names(decisions) <- c("From", "To", "Minute")
-  decisions <- mutate(decisions, adj_flowers_to = arrange(flower_data, Region)$Adjusted_Count[To], #get the adjusted flower count of the region moved to for each decision.
+  decisions <- mutate(decisions, relative_density_to = arrange(flower_data, Region)$Relative_Density[To], #get the relative flower density of the region moved to for each decision.
                       Avoid = mapply(FUN = function(to, from){ which(! c(1,2,3) %in% c(to, from))}, to = To, from = From), #get the region avoided by checking the regions transitioned from and the the region transitioned to against the possible regions (1,2,3; not generalizable to more regions)
   )
-  decisions <- mutate(decisions, adj_flowers_avoid = arrange(flower_data, Region)$Adjusted_Count[Avoid])
+  decisions <- mutate(decisions, relative_density_avoid = arrange(flower_data, Region)$Relative_Density[Avoid])
   return(decisions)
 }
+
+"%||%" <- function(a, b) {
+  if (!is.null(a)) a else b
+}
+
+geom_flat_violin <- function(mapping = NULL, data = NULL, stat = "ydensity",
+                        position = "dodge", trim = TRUE, scale = "area",
+                        show.legend = NA, inherit.aes = TRUE, ...) {
+  layer(
+    data = data,
+    mapping = mapping,
+    stat = stat,
+    geom = GeomFlatViolin,
+    position = position,
+    show.legend = show.legend,
+    inherit.aes = inherit.aes,
+    params = list(
+      trim = trim,
+      scale = scale,
+      ...
+    )
+  )
+}
+
+#' @rdname ggplot2-ggproto
+#' @format NULL
+#' @usage NULL
+#' @export
+GeomFlatViolin <-
+  ggproto("GeomFlatViolin", Geom,
+          setup_data = function(data, params) {
+            data$width <- data$width %||%
+              params$width %||% (resolution(data$x, FALSE) * 0.9)
+            
+            # ymin, ymax, xmin, and xmax define the bounding rectangle for each group
+            data %>%
+              group_by(group) %>%
+              mutate(ymin = min(y),
+                     ymax = max(y),
+                     xmin = x,
+                     xmax = x + width / 2)
+          },
+          
+          draw_group = function(data, panel_scales, coord) {
+            # Find the points for the line to go all the way around
+            data <- transform(data, xminv = x,
+                              xmaxv = x + violinwidth * (xmax - x))
+            
+            # Make sure it's sorted properly to draw the outline
+            newdata <- rbind(plyr::arrange(transform(data, x = xminv), y),
+                             plyr::arrange(transform(data, x = xmaxv), -y))
+            
+            # Close the polygon: set first and last point the same
+            # Needed for coord_polar and such
+            newdata <- rbind(newdata, newdata[1,])
+            
+            ggplot2:::ggname("geom_flat_violin", GeomPolygon$draw_panel(newdata, panel_scales, coord))
+          },
+          
+          draw_key = draw_key_polygon,
+          
+          default_aes = aes(weight = 1, colour = "grey20", fill = "white", size = 0.5,
+                            alpha = NA, linetype = "solid"),
+          
+          required_aes = c("x", "y")
+)
 ```
 
 The data used for this analysis come from two sources: side-angle thermal video recordings of the balsa tree and top-down photographs of the tree captured by drone.
@@ -291,7 +358,7 @@ flower_counts_region <- flower_counts_region %>% mutate(Density = 10 * as.numeri
 
 ### Adjusted Flower Counts
 
-For testing our hypotheses, we need to investigate not only how the number of flowers in each region affects kinkajou behavior, but how the relative abundance between regions affects kinkajou behavior. To do this, we determine the average proportion of flowers counted in each region over the full course of the study (eg, Region 1 typically has 0.30 of the total flowers in the tree crown on a given night). We then use this proportion to determine the expected number of flowers in each region for each night, given the total number of flowers. Finally, we subtract this expected flower count from the actual counts in each region to get deviations from the expectation. By using these deviations as predictors of kinkajou behavior, we can tes the effects of increases or decreases in the relative abundance of flowers within regions.
+For testing our hypotheses, we need to investigate not only how the number of flowers in each region affects kinkajou behavior, but how the relative abundance between regions affects kinkajou behavior. To do this, we determine the average proportion of flowers counted in each region over the full course of the study (eg, Region 1 typically has 0.30 of the total flowers in the tree crown on a given night). We then use this proportion to determine the expected number of flowers in each region for each night, given the total number of flowers. Finally, we subtract this expected flower count from the actual counts in each region to get deviations from the expectation. By using these deviations as predictors of kinkajou behavior, we can test the effects of increases or decreases in the relative abundance of flowers within regions.
 
 ```{r calculate adjusted flower counts}
 flower_counts_region <- flower_counts_region %>% mutate(Relative_Density = Density - flower_counts$Density[pmatch(Study_night, flower_counts$Study_night, duplicates.ok = TRUE)]) #match study_nights between regional and full tree flower count data, subtracting the full tree flower density from each regional density for each night
@@ -333,8 +400,8 @@ for(i in seq_along(transition_arrays)){
   if(nrow(new_decisions) > 0) new_decisions$Study_night = names(transition_arrays[i])
   decisions = rbind(decisions, new_decisions)
 }
-decisions <- mutate(decisions, adj_flowers_diff = adj_flowers_to - adj_flowers_avoid)
-decisions <- mutate(decisions, Success = adj_flowers_diff > 0)
+decisions <- mutate(decisions, relative_density_diff = relative_density_to - relative_density_avoid)
+decisions <- mutate(decisions, Success = relative_density_diff > 0, From_To = factor(mapply(paste, From, To, MoreArgs = list(sep = "_"))))
 ```
 
 
@@ -495,7 +562,7 @@ heatmap.2(log(all_transitions + 1), Rowv = NA, Colv = NA, xlab = "Region (to)", 
 We look at whether the difference in adjusted counts between regions had any impact on decisions the kinkajous made. Here, a success means the kinkajou went to the region with the greater adjusted flower count. We look at the frequencey of success realtive to the magnitude of difference in adjusted flower count between the regions the kinkajou was choosing between.
 
 ```{r decision success plot}
-ggplot(na.omit(decisions)) + geom_point(aes(x = abs(adj_flowers_diff), y = Success, color = interaction(To, Avoid))) +
+ggplot(na.omit(decisions)) + geom_point(aes(x = abs(relative_density_diff), y = Success, color = interaction(To, Avoid))) +
   theme_classic()
 ```
 By appearance, the adjusted flower count does not have an effect on kinkajou decisions
@@ -734,9 +801,9 @@ correlations_proportion <- combined_data_region %>%
 corrplot(correlations_proportion, method = "color")
 ```
 
-The correlations between relative density and residence time are little more interesting. We see that when the density of flowers increases in region 3, residence times increase across all regions. Conversely, residence time in all regions is negatively correlated to the density in region 1. Looking back at the the relative densities across nights there is no clear temporal trend that could be driving this trend (along with decreasing kinkajou residence over the study). It also seems unlikely that the relative densities drive residence times across the whole tree - we would expect higher density in one regions to *decrease* residence time in other regions. We will need a formal model, however, to determine whther this trend falls outside the level of correlation we might expect by chance.
+The correlations between relative density and residence time are little more interesting. We see that when the density of flowers increases in region 3, residence times increase across all regions. Conversely, residence time in all regions is negatively correlated to the density in region 1. Looking back at the the relative densities across nights there is no clear temporal trend that could be driving this trend (along with decreasing kinkajou residence over the study). It also seems unlikely that the relative densities drive residence times across the whole tree - we would expect higher density in one regions to *decrease* residence time in other regions. We will need a formal model, however, to determine whether this trend falls outside the level of correlation we might expect by chance.
 
-Finally, we consider whether the expected relative density (the average relative density across all previous nights) shapes residence times. This would reflects kinkajous relying more on previous information about the distribution of flowers to guide their behavior, and relying less on an ability to determine the actual distribution of flowers on a given night.
+Finally, we consider whether the expected relative density (the average relative density across all previous nights) shapes residence times. This would reflect kinkajous relying more on previous information about the distribution of flowers to guide their behavior, and relying less on an ability to determine the actual distribution of flowers on a given night.
 
 ```{r density expectaion correlations}
 correlations_proportion <- combined_data_region %>% 
@@ -752,7 +819,7 @@ Interestingly, the effects of expected relative density are largely opposite tho
 
 I don't see an easy way to parse out these trends. The best explanation I can offer at this point is that expectations are inherently shaped by all preceding values. Thus high relative densities toward the start of the study might result in positive correlation between relative density and residence time and also lead to higher expected densities toward the end of the study, when residence times are generally lower (and thus a negative correlation between expected relative density and residence time). This leads to some questions about whether (and how) the structurally inherent temporal autocorrlation in expected relative density should be accounted for in a model.
 
-### bayesian methods
+### Bayesian methods
 
 #### Region Density
 
@@ -771,9 +838,9 @@ residence_by_region_regression_model <- brm(Minutes_Per_Hour ~ Density + Region 
 save(residence_by_region_regression_model, file = "../Results/residence_by_region_MCMCs.Rdata")
 summary(residence_by_region_regression_model)
 ```
-# Brendan recomends using a 0 conditional (?) gamma distribution. Look at papers with Joan Silk for an example
 
-By plotting the posterior distribution of parameter coeficcients, we can see the neither the total number of flowers nor the adjusted counts had a clear impact on kinkajous residence times.
+
+By plotting the posterior distribution of parameter coefficients, we can see the neither the total number of flowers nor the adjusted counts had a clear impact on kinkajous residence times.
 
 ```{r posterior plotting3}
 load("../Results/residence_by_region_MCMCs.Rdata")
@@ -797,30 +864,30 @@ post_samples %>%
 ```
 #### Relative Region Density
 
-Because region densitites are very correlated with total flowers, it is probably better to use a predictor that normalizes the regional densities. Here, we get relative region densities by subtracting the density of flowers in the full tree from the density of flowers in each region on that night.
+Because region densities are very correlated with total flowers, it is probably better to use a predictor that normalizes the regional densities. Here, we get relative region densities by subtracting the density of flowers in the full tree from the density of flowers in each region on that night.
 
-Having now explored some simple modelling approaches, we switch now to using the rethinking package to fully and explicitly parameter this final model. The first thing this allows us to do is model the data using a zero-augmented gamma distribution, which is a mixture model that includes both a bernoulli distribution on the probability of observing a zero and a gamma distribution of the expected values when a zero is not observed. Thus, this model explicitly seperates the effects any predictor variables have on kinkajous showing up, versus the amount of time kinkajous stay when they do show up. Final predictions in the posterior will account for the balance between both types of effects.
+Having now explored some simple modelling approaches, we switch now to using the rethinking package to fully and explicitly parameterize this final model. The first thing this allows us to do is model the data using a zero-augmented gamma distribution, which is a mixture model that includes both a bernoulli distribution on the probability of observing a zero and a gamma distribution of the expected values when a zero is not observed. Thus, this model explicitly separates the effects any predictor variables have on kinkajous showing up, versus the amount of time kinkajous stay when they do show up. Final predictions in the posterior will account for the balance between both types of effects.
 
 In addition to the predictor variables described, we take careful consideration in this model of co-variances, prior expectations, repeated measures, and varying effects.
 
-```{r regional analysis relative density}
+```{r regional analysis relative density, eval = FALSE}
 #bayesian methods
 
 
 residence_by_region_relative_density_stan_fit <- map2stan(
   alist(
     Minutes_Per_Hour ~ dzagamma2(p, mu, scale),
-    logit(p) <-  ap + ap_Region[Region] + bp_Average_Density * Average_Density + bp_Relative_Density * Relative_Density + ap_night[Study_night],	
-    log(mu)  <-  am + am_Region[Region] + bm_Average_Density * Average_Density + bm_Relative_Density * Relative_Density + am_night[Study_night],
+    logit(p) <-  ap + ap_Region[Region] + bp_Average_Density * Average_Density + bp_Relative_Density * Relative_Density + ap_night[Study_night],	# logit link function for the bernoulli distribution on probability of observing a zero (no kinkajou residence)
+    log(mu)  <-  am + am_Region[Region] + bm_Average_Density * Average_Density + bm_Relative_Density * Relative_Density + am_night[Study_night], # log link function for the mean (center?) of the gamme distribution on residence time, given a zero is not observed
     #priors below
-    c(ap,am) ~ dnorm(0,2), #prior centers initial probability of 0 residence time at 50% and residence time when a visit occurs at 1 minute. 
-    ap_Region[Region] ~ dnorm(0, ap_sigma_Region),
-    am_Region[Region] ~ dnorm(0, am_sigma_Region),
-    ap_night[Study_night] ~ dnorm(0, ap_sigma_night),
-    am_night[Study_night] ~ dnorm(0, am_sigma_night),
-    c(bp_Average_Density,bm_Average_Density) ~ dnorm(0, 2),
-    c(bp_Relative_Density,bm_Relative_Density) ~ dnorm(0, 2),	
-    c(scale, am_sigma_night, ap_sigma_night, ap_sigma_Region, am_sigma_Region) ~ dexp(1)
+    c(ap,am) ~ dnorm(0,2), #prior centers initial probability distribution of 0 residence time at 50% and residence time when a visit occurs at 1 minute. 
+    ap_Region[Region] ~ dnorm(0, ap_sigma_Region), #prior distribution on random effects of region (probability of 0)
+    am_Region[Region] ~ dnorm(0, am_sigma_Region), #prior distribution on random effects of region (residence time given a 0 is not observed)
+    ap_night[Study_night] ~ dnorm(0, ap_sigma_night), #prior distribution on random effects of night (probability of 0)
+    am_night[Study_night] ~ dnorm(0, am_sigma_night), #prior distribution on reandom effects of night (residence time given a zero is not observed)
+    c(bp_Average_Density,bm_Average_Density) ~ dnorm(0, 2), #prior distributions the coefficients for effects of average density (whole tree) on residence times (probablity of 0 and residence time given 0 is not observed) 
+    c(bp_Relative_Density,bm_Relative_Density) ~ dnorm(0, 2),	#prior distributions the coefficients for effects of relative density on residence times (probability of 0 and residence time given 0 is not observed)
+    c(scale, am_sigma_night, ap_sigma_night, ap_sigma_Region, am_sigma_Region) ~ dexp(1) #prior distributions for variance parameters
   ),
   data = combined_data_region %>% 
     select(Minutes_Per_Hour, Region, Relative_Density, Average_Density, Study_night) %>% 
@@ -836,7 +903,6 @@ residence_by_region_relative_density_stan_fit <- map2stan(
 save(residence_by_region_relative_density_stan_fit, file = "../Results/residence_by_region_MCMCs_relative_density.Rdata")
 stancode(residence_by_region_relative_density_stan_fit)
 ```
-# Brendan recomends using a 0 conditional (?) gamma distribution. Look at papers with Joan Silk for an example
 
 By plotting the posterior distribution of parameter coeficcients, we can see the average density of flowers has a negative relationship with kinkajou residence time across regions, which matches with the decrease in kinkajou residence over time, while flower counts increased over time. Notably, this effect is visible in total time, but NOT in the probability of observing a 0. Thus, kinkajous still appear to come to the tree later in the season, but they do not stay as long. We see little effect of relative desnities in either the probabilities that kinkajous enter the region, or in the amount of time they stay there if they do.
 
@@ -847,7 +913,9 @@ precis(residence_by_region_relative_density_stan_fit)
 plot(residence_by_region_relative_density_stan_fit)
 pairs(residence_by_region_relative_density_stan_fit, pars = c("ap_Region", "am_Region", "am", "ap", "bm_Average_Density", "bp_Average_Density", "bm_Relative_Density", "bp_Relative_Density"))
 
+```
 
+```{r demonstration mixed model predictions}
 samples <- extract.samples(residence_by_region_relative_density_stan_fit)
 
 
@@ -857,7 +925,11 @@ dens(samples$mu[,1])
 
 
 prediction1 <- (1-samples$p[,1]) * samples$mu[,1]
+
 dens(prediction1)
+```
+
+```{r plot coefficient posterior distributions}
 samples_long <- residence_by_region_relative_density_stan_fit %>%
   gather_draws(ap, am, bp_Average_Density, bm_Average_Density, bp_Relative_Density, bm_Relative_Density,
                #can't get regular expressions to work in this, so have to write everything manually /:
@@ -891,7 +963,7 @@ samples_long <- residence_by_region_relative_density_stan_fit %>%
 
 
 #determine and plot average predictions with 89% CIs
-samples_long %>% filter(!str_detect(.variable, "night")) %>%
+samples_long %>% filter(!(str_detect(.variable, "night") | str_detect(.variable, "Region"))) %>%
   ggplot() + 
   stat_density_ridges(aes(x = .value, y = .variable), scale = 1, quantile_lines = TRUE, quantiles = c(0.055, 0.945)) + #the quantile lines on total flowers look wrong . . .
   geom_vline(xintercept = 0, color = "red", linetype = "dashed") +
@@ -900,14 +972,17 @@ samples_long %>% filter(!str_detect(.variable, "night")) %>%
   labs(title = "Posterior Distribution of Coefficients on Kinkajou-Minutes",
        x = "Estimate Effect",
        y = "Coefficient")
+```
+There a a few takeaways this plot of the posterior distributions of main coefficients. First, there is no discernible effect of either the total number of flowers in the tree or the relative density of foweris in a region on the probability of observing a 0 (no kinkajous showed up). There also does not appear to be much effect of relative density on the average time kinkajous spend in a region when they do show up. There is mild support for a negative effect of the average flower density on kinkajous residence times, with nearly 89% of estimates for this coefficient falling below zero. As noted previously in this documents, that appears related to a mild decline in kinkajou residence times toward the end of the study, when flower counts are greatest. THis may be caused by increasing availability of other resources during this time.
 
-samples_long %>% filter(str_detect(.variable, "night")) %>%
+```{r random effects plot}
+samples_long %>% filter(str_detect(.variable, "night") | str_detect(.variable, "Region")) %>%
   ggplot() + 
   stat_density_ridges(aes(x = .value, y = .variable), scale = 1, quantile_lines = TRUE, quantiles = c(0.055, 0.945)) + #the quantile lines on total flowers look wrong . . .
   geom_vline(xintercept = 0, color = "red", linetype = "dashed") +
   theme_classic() +
   xlim(-10, 25) +
-  labs(title = "Posterior Distribution of Varying Effects by Night",
+  labs(title = "Posterior Distribution of Random Effects by Night",
        x = "Estimate Effect",
        y = "Coefficient")
 ```
@@ -915,8 +990,8 @@ samples_long %>% filter(str_detect(.variable, "night")) %>%
 ```{r plot relative density predictions}
 relative_density_data <- residence_by_region_relative_density_stan_fit@data
 
-vioplot((1-samples$p) * samples$mu)
-plot(x = relative_density_data$Relative_Density, y = relative_density_data$Minutes_Per_Hour)
+#vioplot((1-samples$p) * samples$mu)
+#plot(x = relative_density_data$Relative_Density, y = relative_density_data$Minutes_Per_Hour)
 
 predictions <- ((1 - samples$p) * samples$mu) %>% data.frame %>%
   mutate(Draw = 1:n()) %>%
@@ -927,4 +1002,96 @@ predictions <- ((1 - samples$p) * samples$mu) %>% data.frame %>%
 
 ggplot(predictions) + geom_violin(aes(y = Prediction, x = Observed_Relative_Density, group = cut_width(Observation_Number, 1), fill = Region), scale = "width", width = 0.02, alpha = 0.2) +
   geom_point(data = data.frame(relative_density_data[1:5]), aes(x = Relative_Density, y = Minutes_Per_Hour)) + theme_classic()
+```
+#### Kinkajou Decisions
+
+```{r decision model, eval = FALSE}
+decision_model <- ulam(
+  alist(
+    Success ~ binomial(1, p),
+    save> logit(p) <-  ap + ap_From_To[From_To] + bp_flowers * relative_density_diff,
+    #priors below
+    ap ~ dnorm(0,2), #prior centers initial probability distribution of successful transition at 50% 
+    ap_From_To[From_To] ~ dnorm(0, ap_sigma_choice), #prior distribution on random effects of region (probability of 0)
+    bp_flowers ~ dnorm(0, 2), #prior distribution on effect of flower density differential on success rate
+    ap_sigma_choice ~ dexp(1)), #prior distributions for variance parameters,
+  data = decisions %>%
+    mutate(decisions, relative_density_diff = abs(relative_density_diff)) %>%
+    select(relative_density_diff, From_To, Success) %>% 
+    na.omit(), 
+  cores=4 , 
+  chains=4 , 
+  warmup=1500, 
+  iter=3000, 
+  constraints=list(ap_sigma_choice="lower=0")
+)
+
+save(decision_model, file = "../Results/decision_model.Rdata")
+stancode(decision_model)
+```
+
+```{r decision posteriors}
+load("../Results/decision_model.Rdata")
+#Get predictions from each sample of the posterior for each night in the study
+precis(decision_model)
+plot(decision_model)
+pairs(decision_model, pars = c("ap_From_To", "ap", "bp_flowers"))
+
+```
+
+```{r decision_samples}
+decision_samples_long <- decision_model %>%
+  gather_draws(ap, bp_flowers,
+               #can't get regular expressions to work in this, so have to write everything manually /:
+               ap_From_To.1,ap_From_To.2,ap_From_To.3,ap_From_To.4,ap_From_To.5,ap_From_To.6,
+               )
+
+
+#determine and plot average predictions with 89% CIs
+decision_samples_long %>%
+  ggplot() + 
+  stat_density_ridges(aes(x = .value, y = .variable), scale = 1, quantile_lines = TRUE, quantiles = c(0.055, 0.945)) + #the quantile lines on total flowers look wrong . . .
+  geom_vline(xintercept = 0, color = "red", linetype = "dashed") +
+  theme_classic() +
+  labs(title = "Posterior Distribution of Coefficients on Kinkajou-Minutes",
+       x = "Estimate Effect",
+       y = "Coefficient")
+```
+
+```{r plot_decision_model_predictions1}
+decision_samples <- extract.samples(decision_model)
+CI <- quantile(decision_samples$p, probs = c(0.055, 0.945))
+den <- density(decision_samples$p)
+l <- min(which(den$x >= CI[1])) 
+h <- max(which(den$x < CI[2]))
+{
+  plot(den)
+  polygon(c(den$x[c(l, l:h, h)]),
+        c(0, den$y[l:h], 0),
+        col = "slateblue1")
+}
+
+```
+
+```{r plot_decision_model_predictions2}
+decision_predictions <- decision_samples$p %>% data.frame %>%
+  mutate(Draw = 1:n()) %>%
+  pivot_longer(cols = -Draw, names_to = "Observation_Number", values_to = "Predicted_Probability") %>%
+  mutate(Observation_Number = Observation_Number %>% strsplit(split = "") %>% sapply(function(X) paste(X[-1], collapse = "")) %>% as.numeric) %>%
+  mutate(Relative_Density_Diff = decision_model@data$relative_density_diff[Observation_Number],
+         From_To = decision_model@data$From[Observation_Number],
+         Success = decision_model@data$Success[Observation_Number])
+
+From_To_labs <- c("1->2", "1->3", "2->1", "2->3", "3->1", "3->2")
+names(From_To_labs) <-  as.character(1:6)
+
+ggplot(decision_predictions, aes(x = Predicted_Probability, y = reorder(factor(Observation_Number), Relative_Density_Diff), color = factor(Success))) + 
+  scale_y_discrete(labels = round(sort(decision_model@data$relative_density_diff), digits = 3)) +
+  geom_density_ridges() + 
+  theme(axis.text.y = element_text(angle = 90)) +
+  labs(x = "Predicted Probability", y = "Relative Density Difference") +
+  coord_flip() + 
+  theme_classic() + 
+  facet_wrap(~From_To, ncol = 1, labeller = labeller(From_To = From_To_labs))
+
 ```
