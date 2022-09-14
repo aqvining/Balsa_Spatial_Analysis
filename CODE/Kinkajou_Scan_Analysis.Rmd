@@ -282,6 +282,9 @@ get_transitions <- function(count_data){
 
 transition_arrays <- all_kinkajou_scans %>% group_by(Study_night) %>% group_map(~get_transitions(.x))
 names(transition_arrays) <- as.character(unique(all_kinkajou_scans$Study_night))
+
+stays <- lapply(transition_arrays, function(X) apply(X, 3, diag)[1:3,])
+departures <- lapply(transition_arrays, function(X) apply(X, c(1,3), sum)[1:3,] - apply(X, 3, diag)[1:3,])
 ```
 
 Because we only have counts, this method can sometimes be ambiguous when multiple transitions occur. For example, in the transition from row 202 to 203 of Study Night 20, there could either be transitions from 1 to 2 and 4 to 3, or from 1 to 3 and 4 to 2. Our approach will always chose the possibility with the lowest initial numeric combination (eg 1 to 2 instead of 1 to 3.)
@@ -1093,5 +1096,11 @@ ggplot(decision_predictions, aes(x = Predicted_Probability, y = reorder(factor(O
   coord_flip() + 
   theme_classic() + 
   facet_wrap(~From_To, ncol = 1, labeller = labeller(From_To = From_To_labs))
+
+```
+
+#### Social Displacement
+
+```{r}
 
 ```
