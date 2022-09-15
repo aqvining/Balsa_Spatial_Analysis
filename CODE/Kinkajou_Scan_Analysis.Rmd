@@ -299,7 +299,7 @@ for (i in seq_along(departures)){
                         Study_Night = names(departures[i]))
   departures_df <- rbind(departures_df, temp_df)
 }
-departures_long <- data.frame(matrix(nrow = 0, ncol = 6))
+departures_long <- matrix(nrow = 0, ncol = 6)
 
 for(i in 1:nrow(departures_df)) {
   #Get data for Region 1
@@ -324,6 +324,7 @@ for(i in 1:nrow(departures_df)) {
                                                                              sum(departures_df$n_1[i], departures_df$n_3[i]), #Neighbors
                                                                              departures_df$departures_3[i]))
 }
+departures_long <- data.frame(matrix(as.numeric(departures_long), ncol = 6))
 colnames(departures_long) <- c("Study_Night", "Minute", "Region", "n", "Neighbors", "Departures")
 departures_long$Region <- factor(departures_long$Region)
 ```
@@ -1012,7 +1013,7 @@ samples_long %>% filter(!(str_detect(.variable, "night") | str_detect(.variable,
   stat_density_ridges(aes(x = .value, y = .variable), scale = 1, quantile_lines = TRUE, quantiles = c(0.055, 0.945)) + #the quantile lines on total flowers look wrong . . .
   geom_vline(xintercept = 0, color = "red", linetype = "dashed") +
   theme_classic() +
-  xlim(-10, 25) +
+  #xlim(-10, 10) +
   labs(title = "Posterior Distribution of Coefficients on Kinkajou-Minutes",
        x = "Estimate Effect",
        y = "Coefficient")
@@ -1097,7 +1098,7 @@ decision_samples_long %>%
   stat_density_ridges(aes(x = .value, y = .variable), scale = 1, quantile_lines = TRUE, quantiles = c(0.055, 0.945)) + #the quantile lines on total flowers look wrong . . .
   geom_vline(xintercept = 0, color = "red", linetype = "dashed") +
   theme_classic() +
-  labs(title = "Posterior Distribution of Coefficients on Kinkajou-Minutes",
+  labs(title = "Posterior Distribution of Coefficients on Success Probability",
        x = "Estimate Effect",
        y = "Coefficient")
 ```
@@ -1130,10 +1131,10 @@ From_To_labs <- c("1->2", "1->3", "2->1", "2->3", "3->1", "3->2")
 names(From_To_labs) <-  as.character(1:6)
 
 ggplot(decision_predictions, aes(x = Predicted_Probability, y = reorder(factor(Observation_Number), Relative_Density_Diff), color = factor(Success))) + 
-  scale_y_discrete(labels = round(sort(decision_model@data$relative_density_diff), digits = 3)) +
+  #scale_y_discrete(labels = round(sort(decision_model@data$relative_density_diff), digits = 3)) +
   geom_density_ridges() + 
   theme(axis.text.y = element_text(angle = 90)) +
-  labs(x = "Predicted Probability", y = "Relative Density Difference") +
+  labs(x = "Predicted Probability", y = "Observation Number (arranged by relative density difference)") +
   coord_flip() + 
   theme_classic() + 
   facet_wrap(~From_To, ncol = 1, labeller = labeller(From_To = From_To_labs))
@@ -1142,25 +1143,78 @@ ggplot(decision_predictions, aes(x = Predicted_Probability, y = reorder(factor(O
 
 #### Social Displacement
 
-```{r}
+```{r social_model_fitting, eval = FALSE}
 social_model <- ulam(
   alist(
-    Success ~ binomial(n, p),
+    Departures ~ binomial(n, p),
     save> logit(p) <-  ap + ap_Region[Region] + ap_Night[Study_Night] + bp_n * n + bp_Neighbors * Neighbors,
     #priors below
     ap ~ dnorm(0,2), #prior centers initial probability distribution of departure at 50% 
     ap_Region[Region] ~ dnorm(0, ap_sigma_Region), #prior distribution on random effects of region
     ap_Night[Study_Night] ~ dnorm(0, ap_sigma_Night), #prior distribution on random effects of Study Night
-    c(bp_n, bp_Neightbors) ~ dnorm(0, 2), #prior distributions on effect of number of kinkajous in the region of interest and number of kinkajous in other regions on departure rates
+    c(bp_n, bp_Neighbors) ~ dnorm(0, 2), #prior distributions on effect of number of kinkajous in the region of interest and number of kinkajous in other regions on departure rates
     c(ap_sigma_Region, ap_sigma_Night) ~ dexp(1)), #prior distributions for variance parameters,
   data = departures_long %>%
-    mutate(decisions, relative_density_diff = abs(relative_density_diff)) %>%
-    select(relative_density_diff, From_To, Success) %>% 
+    mutate(Study_Night = factor(Study_Night)) %>% 
+    select(!Minute) %>% 
     na.omit(), 
   cores=4 , 
   chains=4 , 
   warmup=1500, 
   iter=3000, 
-  constraints=list(ap_sigma_choice="lower=0")
+  constraints=list(ap_sigma_Region="lower=0", ap_sigma_Night="lower=0")
 )
+
+save(social_model, file = "../Results/social_model.Rdata")
+stancode(social_model)
+```
+
+
+```{r departure posteriors}
+load("../Results/social_model.Rdata")
+#Get predictions from each sample of the posterior for each night in the study
+precis(social_model)
+plot(social_model)
+pairs(social_model, pars = c("ap", "bp_n", "bp_Neighbors", "ap_sigma_Night", "ap_sigma_Region"))
+
+```
+
+```{r social_samples}
+social_samples_long <- social_model %>%
+  gather_draws(ap, bp_n, bp_Neighbors, ap_sigma_Night,
+               #can't get regular expressions to work in this, so have to write everything manually /:
+               ap_Region.1,ap_Region.2,ap_Region.3
+               )
+
+
+#determine and plot average predictions with 89% CIs
+social_samples_long %>%
+  ggplot() + 
+  stat_density_ridges(aes(x = .value, y = .variable), scale = 1, quantile_lines = TRUE, quantiles = c(0.055, 0.945)) + #the quantile lines on total flowers look wrong . . .
+  geom_vline(xintercept = 0, color = "red", linetype = "dashed") +
+  theme_classic() +
+  labs(title = "Posterior Distribution of Coefficients on Departure Rates",
+       x = "Estimate Effect",
+       y = "Coefficient")
+```
+```{r plot_social_model_predictions}
+social_samples <- extract.samples(social_model)
+social_predictions <- social_samples$p %>% data.frame %>%
+  mutate(Draw = 1:n()) %>%
+  pivot_longer(cols = -Draw, names_to = "Observation_Number", values_to = "Predicted_Probability") %>%
+  mutate(Observation_Number = Observation_Number %>% strsplit(split = "") %>% sapply(function(X) paste(X[-1], collapse = "")) %>% as.numeric) %>%
+  mutate(Region = social_model@data$Region[Observation_Number],
+         n = social_model@data$n[Observation_Number],
+         Neighbors = social_model@data$Neighbors[Observation_Number],
+         Departures = social_model@data$departures[Observation_Number])
+
+
+ggplot(social_predictions, aes(x = Predicted_Probability, y = factor(n), group = factor(n))) + 
+  geom_density_ridges() + 
+  theme(axis.text.y = element_text(angle = 90)) +
+  labs(x = "Predicted Probability", y = "Kinkajous in same Region") +
+  coord_flip() + 
+  theme_classic() + 
+  facet_grid(vars(Region), vars(Neighbors))
+
 ```
