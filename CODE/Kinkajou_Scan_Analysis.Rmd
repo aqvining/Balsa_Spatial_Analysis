@@ -283,8 +283,49 @@ get_transitions <- function(count_data){
 transition_arrays <- all_kinkajou_scans %>% group_by(Study_night) %>% group_map(~get_transitions(.x))
 names(transition_arrays) <- as.character(unique(all_kinkajou_scans$Study_night))
 
-stays <- lapply(transition_arrays, function(X) apply(X, 3, diag)[1:3,])
-departures <- lapply(transition_arrays, function(X) apply(X, c(1,3), sum)[1:3,] - apply(X, 3, diag)[1:3,])
+#the below calculations wrangle the data into a long form data frame that can fit a binomial model to determine how many kinkajous are likely to depart from a region at any given minute, as a function of the number of kinkajous in that region and the number of kinkajous in other regions. Its a little crude but gets the job done
+stays <- lapply(transition_arrays, function(X) apply(X, 3, diag)[1:3,]) #diagonal element of each slice of transition array (representing a minute) give number of kinkajous that stayed in the region they were in on the previous minute
+departures <- lapply(transition_arrays, function(X) apply(X, c(1,3), sum)[1:3,] - apply(X, 3, diag)[1:3,]) #summing the rows of transition array slices gives the total number of kinkajous. Subjecting the slice diagonal gives the number that moved to a new region
+departures_df <- c()
+for (i in seq_along(departures)){
+  temp_df <- data.frame(Minute = 1:ncol(departures[[i]]), 
+                        #get stays and departures for each region, given by the rows of the respective arrays (cols are minutes)
+                        n_1 = departures[[i]][1,] + stays[[i]][1,], 
+                        n_2 = departures[[i]][2,] + stays[[i]][2,],
+                        n_3 = departures[[i]][3,] + stays[[i]][3,],
+                        departures_1 = departures[[i]][1,],
+                        departures_2 = departures[[i]][2,],
+                        departures_3 = departures[[i]][3,],
+                        Study_Night = names(departures[i]))
+  departures_df <- rbind(departures_df, temp_df)
+}
+departures_long <- data.frame(matrix(nrow = 0, ncol = 6))
+
+for(i in 1:nrow(departures_df)) {
+  #Get data for Region 1
+  if (departures_df$n_1[i] > 0) departures_long <- rbind(departures_long, c(departures_df$Study_Night[i], #study Night
+                                                                            departures_df$Minute[i], #Minute
+                                                                            1, #Region
+                                                                            departures_df$n_1[i], #n
+                                                                            sum(departures_df$n_2[i], departures_df$n_3[i]), #Neighbors
+                                                                            departures_df$departures_1[i])) #Departures
+  #Get data for Region 2
+  if (departures_df$n_2[i] > 0) departures_long <- rbind(departures_long, c(departures_df$Study_Night[i],
+                                                                            departures_df$Minute[i],
+                                                                            2, #Region
+                                                                            departures_df$n_2[i], #n
+                                                                            sum(departures_df$n_1[i], departures_df$n_3[i]), #Neighbors
+                                                                            departures_df$departures_2[i]))
+  #Get data for Region 3
+  if (departures_df$n_3[i] > 0) departures_long <-  rbind(departures_long, c(departures_df$Study_Night[i],
+                                                                             departures_df$Minute[i],
+                                                                             3, #Region
+                                                                             departures_df$n_3[i], #n
+                                                                             sum(departures_df$n_1[i], departures_df$n_3[i]), #Neighbors
+                                                                             departures_df$departures_3[i]))
+}
+colnames(departures_long) <- c("Study_Night", "Minute", "Region", "n", "Neighbors", "Departures")
+departures_long$Region <- factor(departures_long$Region)
 ```
 
 Because we only have counts, this method can sometimes be ambiguous when multiple transitions occur. For example, in the transition from row 202 to 203 of Study Night 20, there could either be transitions from 1 to 2 and 4 to 3, or from 1 to 3 and 4 to 2. Our approach will always chose the possibility with the lowest initial numeric combination (eg 1 to 2 instead of 1 to 3.)
@@ -1102,5 +1143,24 @@ ggplot(decision_predictions, aes(x = Predicted_Probability, y = reorder(factor(O
 #### Social Displacement
 
 ```{r}
-
+social_model <- ulam(
+  alist(
+    Success ~ binomial(n, p),
+    save> logit(p) <-  ap + ap_Region[Region] + ap_Night[Study_Night] + bp_n * n + bp_Neighbors * Neighbors,
+    #priors below
+    ap ~ dnorm(0,2), #prior centers initial probability distribution of departure at 50% 
+    ap_Region[Region] ~ dnorm(0, ap_sigma_Region), #prior distribution on random effects of region
+    ap_Night[Study_Night] ~ dnorm(0, ap_sigma_Night), #prior distribution on random effects of Study Night
+    c(bp_n, bp_Neightbors) ~ dnorm(0, 2), #prior distributions on effect of number of kinkajous in the region of interest and number of kinkajous in other regions on departure rates
+    c(ap_sigma_Region, ap_sigma_Night) ~ dexp(1)), #prior distributions for variance parameters,
+  data = departures_long %>%
+    mutate(decisions, relative_density_diff = abs(relative_density_diff)) %>%
+    select(relative_density_diff, From_To, Success) %>% 
+    na.omit(), 
+  cores=4 , 
+  chains=4 , 
+  warmup=1500, 
+  iter=3000, 
+  constraints=list(ap_sigma_choice="lower=0")
+)
 ```
