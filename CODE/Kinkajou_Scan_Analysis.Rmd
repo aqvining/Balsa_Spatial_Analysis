@@ -49,6 +49,23 @@ library(tidybayes.rethinking)
 library(vioplot)
 library(tibble)
 library(ggforce)
+
+#Load entropy calculation tools
+setwd("C:\\Users\\avining\\Documents\\Sequence Analysis")
+source("LOOK.R")
+source("simp.R")
+source("infoLines.R")
+source("infoLines_inser_del.R")
+source("group.R")
+source("group_first.R")
+source("infoLines_subMAT.R")
+source("simp_subMAT.R")
+source("inclusion.R")
+source("incl_test.R")
+source("draw_probPlot.R")
+source("draw_seq.R")
+source("entropy.R")
+source("AutoO.R")
 ```
 
 ```{r helper_functions, include=FALSE}
@@ -96,10 +113,13 @@ get_decision_info <- function(transition_array, flower_data){
                                  FUN = rep, 
                                  times = mapply(function(data, dim1,dim2,dim3) data[dim1,dim2,dim3], dim1 = decisions$dim1, dim2=decisions$dim2, dim3=decisions$dim3, MoreArgs = list(data = decision_transitions))))
   names(decisions) <- c("From", "To", "Minute")
-  decisions <- mutate(decisions, relative_density_to = arrange(flower_data, Region)$Relative_Density[To], #get the relative flower density of the region moved to for each decision.
+  decisions <- mutate(decisions, 
+                      relative_density_to = arrange(flower_data, Region)$Relative_Density[To], #get the relative flower density of the region moved to for each decision.
+                      expected_rel_dens_to = arrange(flower_data, Region)$Expected_Relative_Density[To],
                       Avoid = mapply(FUN = function(to, from){ which(! c(1,2,3) %in% c(to, from))}, to = To, from = From), #get the region avoided by checking the regions transitioned from and the the region transitioned to against the possible regions (1,2,3; not generalizable to more regions)
   )
-  decisions <- mutate(decisions, relative_density_avoid = arrange(flower_data, Region)$Relative_Density[Avoid])
+  decisions <- mutate(decisions, relative_density_avoid = arrange(flower_data, Region)$Relative_Density[Avoid],
+                      expected_rel_dens_avoid = arrange(flower_data, Region)$Expected_Relative_Density[Avoid])
   return(decisions)
 }
 
@@ -342,6 +362,23 @@ And here are the transitions infered by our algorithm. Note that the transition 
 transition_arrays[["20"]][,,203]
 ```
 
+## Kinkajou Movement Reference Simulations
+
+There are many factors that could be influencing kinkajou movements within the balsa crown other than flower distributions or memory. Ooutside factors likely influence when kinkajous show up at all, and tree structure may influence how often kinkajous move between specific regions. One way to estimate how to seperate the influences of unknown parameters from the effects of interest is to simulate data to use as a reference. Here we simulate kinkajou movements within the tree crown using only average transition rates. In other words, these simulations allow us to understand how correlations between tree structure and flower counts, for example, might lead us to conclude flower counts influence kinkajou movements, even if the dynamics that shape movement are completely independant of flower counts. Here, we simulate two reference models. In the first, we maintain the overall timing of kinkajou visits by initializing kinkajous entering the tree at the same times (and to the same regions) as in the empirical data. The path the kinkajous take through the tree after this point, however, is determined stochastically using probabilities derived from the rate of kinkajou transitions between regions across the whole study. Thus, we can ask what range of parameter estimates would our model find if kinkajou movements were based purely on fixed, per minute transition rates and had no dependence on previous behavior, flower counts, other kinkajous etc. . .
+
+In the second reference model, we also relax the deterministic constraints on when kinkajous enter the tree. To do this, we determine the average rate of kinkajous entering the tree, and simulate this across the study period, regardless of when kinkajous actually visited.
+
+```{r reference_model_1_simulations}
+transition_probabilities <- t(apply(all_transitions, MARGIN = 1, FUN = function(X) X/sum(X))) #convert total transitions to proportions
+simulated_scans <- all_kinkajou_scans %>% select(timestamp, Region1_total, Region2_total, Region3_total, Study_night)
+
+for(night in names(transition_arrays)){
+  simulated_scans[simulated_scans$Study_night == night,2:4] <- t(transition_arrays[[night]][4,-4,]) #indexes of transition arrays gets the number of entries into each region (vector of length 3) for each minute of a given night
+}
+
+
+```
+
 ## Drone Image Processing and Flower Counts
 
 The second source of data are orthomosiac images of the balsa crown created by stitching together 100 images taken sequentially by a drone flying over the balsa tree. Because, again, these files are large, the data contained in this repository are geopackages containing WGS 84 locations and tree crown region of each flower in the crown. These data were extracted by first stitching together the drone photos from each flight into an orthmosaic (speak to Andreas about details). Second, Alexander Vining used the software QGIS to align each orthomosiac with Google satellite imagery of the study site and hand-delinieate the three regions of the tree crown. Finally, Nele Stockmeyer created spatial points for each flower in the orthomosaic, noting whether the flower appeared to be upright or fallen over.
@@ -445,11 +482,55 @@ for(i in seq_along(transition_arrays)){
   if(nrow(new_decisions) > 0) new_decisions$Study_night = names(transition_arrays[i])
   decisions = rbind(decisions, new_decisions)
 }
-decisions <- mutate(decisions, relative_density_diff = relative_density_to - relative_density_avoid)
-decisions <- mutate(decisions, Success = relative_density_diff > 0, From_To = factor(mapply(paste, From, To, MoreArgs = list(sep = "_"))))
+decisions <- mutate(decisions, relative_density_diff = relative_density_to - relative_density_avoid,
+                    expected_density_diff = expected_rel_dens_to - expected_rel_dens_avoid)
+decisions <- mutate(decisions, Success = relative_density_diff > 0, 
+                    Success_Expected = expected_density_diff > 0,
+                    From_To = factor(mapply(paste, From, To, MoreArgs = list(sep = "_"))))
 ```
 
+### Solo Movement Sequences
 
+```{r solo bout extraction}
+solo_visits <- all_kinkajou_scans %>% 
+  filter((Region1_total + Region2_total + Region3_total) == 1)
+
+solo_visits$location = NA
+solo_visits$sequence = 1
+for(i in 1:nrow(solo_visits)) {
+  solo_visits$location[i] <- which(c(solo_visits$Region1_total[i], solo_visits$Region2_total[i], solo_visits$Region3_total[i]) == 1)
+  if (i >= 2) {
+    if (difftime(solo_visits$timestamp[i], solo_visits$timestamp[i-1], units = "mins") != 1) { solo_visits$sequence[i] = solo_visits$sequence[i-1] + 1
+    } else solo_visits$sequence[i] = solo_visits$sequence[i-1]
+  } 
+}
+
+#combine sequences 1 and 2, which are separated by a gap in video meant to fix clock drift
+solo_visits$sequence[solo_visits$sequence == 2] <- 1
+#Same for sequences 5 and 6
+solo_visits$sequence[solo_visits$sequence == 6] <- 5
+#Same for sequences 9 and 10
+solo_visits$sequence[solo_visits$sequence == 10] <- 9
+#Same for sequences 11 and 12
+solo_visits$sequence[solo_visits$sequence == 12] <- 11
+#Same for sequences 14 and 15
+solo_visits$sequence[solo_visits$sequence == 15] <- 14
+#Same for sequences 44-47
+solo_visits$sequence[solo_visits$sequence == 45] <- 44
+solo_visits$sequence[solo_visits$sequence == 46] <- 44
+solo_visits$sequence[solo_visits$sequence == 47] <- 44
+#61 and 62 are likely the same individual that went out of site
+solo_visits$sequence[solo_visits$sequence == 62] <- 61
+#combine sequences 72 and 73, which are separated by a gap in video meant to fix clock drift, and 74 which was seperated due to a missing minute
+solo_visits$sequence[solo_visits$sequence == 73] <- 72
+solo_visits$sequence[solo_visits$sequence == 74] <- 72
+#Combine 78 and 79, which are only seperated by a missing minute
+solo_visits$sequence[solo_visits$sequence == 79] <- 78
+#combine sequences 88 and 89, which are separated by a gap in video meant to fix clock drift
+solo_visits$sequence[solo_visits$sequence == 89] <- 88
+#Combine 93 and 94, which are only seperated by a missing minute
+solo_visits$sequence[solo_visits$sequence == 79] <- 78
+```
 # Data Visualization
 
 With the data prepared, we visualize spatio-temporal patterns of both flowers and kinkajous within the tree-crown as a whole and within regions of the tree crown. Based on our hypotheses, we made some predictions about patterns we expected to see.
@@ -1054,7 +1135,7 @@ ggplot(predictions) + geom_violin(aes(y = Prediction, x = Observed_Relative_Dens
 decision_model <- ulam(
   alist(
     Success ~ binomial(1, p),
-    save> logit(p) <-  ap + ap_From_To[From_To] + bp_flowers * relative_density_diff,
+    logit(p) <-  ap + ap_From_To[From_To] + bp_flowers * relative_density_diff,
     #priors below
     ap ~ dnorm(0,2), #prior centers initial probability distribution of successful transition at 50% 
     ap_From_To[From_To] ~ dnorm(0, ap_sigma_choice), #prior distribution on random effects of region (probability of 0)
@@ -1068,7 +1149,8 @@ decision_model <- ulam(
   chains=4 , 
   warmup=1500, 
   iter=3000, 
-  constraints=list(ap_sigma_choice="lower=0")
+  constraints=list(ap_sigma_choice="lower=0"),
+  log_lik = TRUE
 )
 
 save(decision_model, file = "../Results/decision_model.Rdata")
@@ -1141,6 +1223,103 @@ ggplot(decision_predictions, aes(x = Predicted_Probability, y = reorder(factor(O
 
 ```
 
+#### Decision Model Based on Expectations
+
+```{r expectation decision model, eval = FALSE}
+decision_model_expectation <- ulam(
+  alist(
+    Success_Expected ~ binomial(1, p),
+    logit(p) <-  ap + ap_From_To[From_To] + bp_flowers * expected_density_diff,
+    #priors below
+    ap ~ dnorm(0,2), #prior centers initial probability distribution of successful transition at 50% 
+    ap_From_To[From_To] ~ dnorm(0, ap_sigma_choice), #prior distribution on random effects of region (probability of 0)
+    bp_flowers ~ dnorm(0, 2), #prior distribution on effect of flower density differential on success rate
+    ap_sigma_choice ~ dexp(1)), #prior distributions for variance parameters,
+  data = decisions %>%
+    mutate(expected_density_diff = abs(expected_density_diff)) %>%
+    select(expected_density_diff, From_To, Success_Expected) %>% 
+    na.omit(), 
+  cores=4 , 
+  chains=4 , 
+  warmup=1500, 
+  iter=3000, 
+  constraints=list(ap_sigma_choice="lower=0"),
+  log_lik = TRUE
+)
+
+save(decision_model_expectation, file = "../Results/decision_model_expectation.Rdata")
+stancode(decision_model_expectation)
+```
+
+```{r expectation decision posteriors}
+load("../Results/decision_model_expectation.Rdata")
+#Get predictions from each sample of the posterior for each night in the study
+precis(decision_model_expectation)
+plot(decision_model_expectation)
+pairs(decision_model_expectation, pars = c("ap_From_To", "ap", "bp_flowers"))
+
+```
+
+```{r decision_samples2}
+decision_samples_long <- decision_model_expectation %>%
+  gather_draws(ap, bp_flowers,
+               #can't get regular expressions to work in this, so have to write everything manually /:
+               ap_From_To.1,ap_From_To.2,ap_From_To.3,ap_From_To.4,ap_From_To.5,ap_From_To.6,
+               )
+
+
+#determine and plot average predictions with 89% CIs
+decision_samples_long %>%
+  ggplot() + 
+  stat_density_ridges(aes(x = .value, y = .variable), scale = 1, quantile_lines = TRUE, quantiles = c(0.055, 0.945)) + #the quantile lines on total flowers look wrong . . .
+  geom_vline(xintercept = 0, color = "red", linetype = "dashed") +
+  theme_classic() +
+  labs(title = "Posterior Distribution of Coefficients on Success Probability (Expectation Model)",
+       x = "Estimate Effect",
+       y = "Coefficient")
+```
+
+```{r plot_decision_model_predictions1}
+decision_samples <- extract.samples(decision_model)
+CI <- quantile(decision_samples$p, probs = c(0.055, 0.945))
+den <- density(decision_samples$p)
+l <- min(which(den$x >= CI[1])) 
+h <- max(which(den$x < CI[2]))
+{
+  plot(den)
+  polygon(c(den$x[c(l, l:h, h)]),
+        c(0, den$y[l:h], 0),
+        col = "slateblue1")
+}
+
+```
+
+```{r plot_decision_model_predictions2}
+decision_predictions <- decision_samples$p %>% data.frame %>%
+  mutate(Draw = 1:n()) %>%
+  pivot_longer(cols = -Draw, names_to = "Observation_Number", values_to = "Predicted_Probability") %>%
+  mutate(Observation_Number = Observation_Number %>% strsplit(split = "") %>% sapply(function(X) paste(X[-1], collapse = "")) %>% as.numeric) %>%
+  mutate(Relative_Density_Diff = decision_model@data$relative_density_diff[Observation_Number],
+         From_To = decision_model@data$From[Observation_Number],
+         Success = decision_model@data$Success[Observation_Number])
+
+From_To_labs <- c("1->2", "1->3", "2->1", "2->3", "3->1", "3->2")
+names(From_To_labs) <-  as.character(1:6)
+
+ggplot(decision_predictions, aes(x = Predicted_Probability, y = reorder(factor(Observation_Number), Relative_Density_Diff), color = factor(Success))) + 
+  #scale_y_discrete(labels = round(sort(decision_model@data$relative_density_diff), digits = 3)) +
+  geom_density_ridges() + 
+  theme(axis.text.y = element_text(angle = 90)) +
+  labs(x = "Predicted Probability", y = "Observation Number (arranged by relative density difference)") +
+  coord_flip() + 
+  theme_classic() + 
+  facet_wrap(~From_To, ncol = 1, labeller = labeller(From_To = From_To_labs))
+
+```
+
+```{r model comparison}
+rethinking::compare(decision_model, decision_model_expectation)
+```
 #### Social Displacement
 
 ```{r social_model_fitting, eval = FALSE}
@@ -1216,5 +1395,15 @@ ggplot(social_predictions, aes(x = Predicted_Probability, y = factor(n), group =
   coord_flip() + 
   theme_classic() + 
   facet_grid(vars(Region), vars(Neighbors))
+
+```
+
+### Sequence Predictability
+```{r get_full_sequence_R}
+solo_transition_sequence <- solo_visits %>% group_by(sequence) %>% summarize(transitions = paste(rle(location)$values, collapse = ""))
+solo_transition_sequence <- paste(solo_transition_sequence$transitions, collapse = "S") %>% strsplit(split = "")
+
+solo_transition_entropy <- entropy(solo_transition_sequence[[1]])
+transitions_R = 1-  min(solo_transition_entropy)
 
 ```
