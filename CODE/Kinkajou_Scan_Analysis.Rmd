@@ -392,28 +392,34 @@ In the second reference model, we also relax the deterministic constraints on wh
 
 ```{r reference_model_1_simulations}
 transition_probabilities <- t(apply(all_transitions, MARGIN = 1, FUN = function(X) X/sum(X))) #convert total transitions to proportions
-simulated_scans <- all_kinkajou_scans %>% select(Region1_total, Region2_total, Region3_total, Study_night, timestamp)
 
+entries <- all_kinkajou_scans %>% select(Region1_total, Region2_total, Region3_total, Study_night, timestamp)
 for(night in names(transition_arrays)){
-  simulated_scans[simulated_scans$Study_night == night,1:3] <- t(transition_arrays[[night]][4,-4,]) #indexes of transition arrays gets the number of entries into each region (vector of length 3) for each minute of a given night
+  entries[entries$Study_night == night,1:3] <- t(transition_arrays[[night]][4,-4,]) #indexes of transition arrays gets the number of entries into each region (vector of length 3) for each minute of a given night
 }
+entry_points <- which(entries[,1:3] == 1, arr.ind = TRUE)
 
-entry_points <- which(simulated_scans[,1:3] == 1, arr.ind = TRUE)
-for(entry in seq_along(entry_points[,1])){
-  #The following code propagates each entry into the tree though time using the transition matrix until a 4 (exit) is drawn
-  i = entry_points[entry,1]
-  j = entry_points[entry,2]
-  study_night = simulated_scans$Study_night[i]
-  while(j != 4 & study_night == simulated_scans$Study_night[i]) {
-    j <- sample(1:4, size = 1, prob = transition_probabilities[j,])
-    i <- i + 1
-    simulated_scans[i,j] <- simulated_scans[i,j] + 1 
+
+simulated_scans = vector(mode = "list", length = 100)
+for(sim in seq_along(simulated_scans)){
+  simulated_scans[[sim]] <- entries
+  for(entry in seq_along(entry_points[,1])){
+    #The following code propagates each entry into the tree though time using the transition matrix until a 4 (exit) is drawn
+    i = entry_points[entry,1]
+    j = entry_points[entry,2]
+    study_night = simulated_scans[[sim]]$Study_night[i]
+    while(j != 4 & study_night == simulated_scans[[sim]]$Study_night[i]) {
+      j <- sample(1:4, size = 1, prob = transition_probabilities[j,])
+      if(i < nrow(simulated_scans[[sim]])){ 
+        i <- i + 1
+        simulated_scans[[sim]][i,j] <- simulated_scans[[sim]][i,j] + 1 
+      } else j <- 4 #simulated kinkajou exits if end of study period arrives
+    }
   }
-  print("Simulated Kinkajou Exited")
+  print(paste("simulation", sim, "finished", sep = " "))
 }
 
-
-
+write.csv(simulated_scans, file = "../Results/reference_simulations1.csv")
 ```
 
 ## Drone Image Processing and Flower Counts
