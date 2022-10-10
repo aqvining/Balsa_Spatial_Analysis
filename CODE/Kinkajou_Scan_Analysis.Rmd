@@ -410,10 +410,12 @@ for(sim in seq_along(simulated_scans)){
     study_night = simulated_scans[[sim]]$Study_night[i]
     while(j != 4 & study_night == simulated_scans[[sim]]$Study_night[i]) {
       j <- sample(1:4, size = 1, prob = transition_probabilities[j,])
-      if(i < nrow(simulated_scans[[sim]])){ 
-        i <- i + 1
-        simulated_scans[[sim]][i,j] <- simulated_scans[[sim]][i,j] + 1 
-      } else j <- 4 #simulated kinkajou exits if end of study period arrives
+      if(j != 4) {
+        if(i < nrow(simulated_scans[[sim]])){ 
+          i <- i + 1
+          simulated_scans[[sim]][i,j] <- simulated_scans[[sim]][i,j] + 1 
+        } else j <- 4 #simulated kinkajou exits if end of study period arrives
+      }
     }
   }
   print(paste("simulation", sim, "finished", sep = " "))
