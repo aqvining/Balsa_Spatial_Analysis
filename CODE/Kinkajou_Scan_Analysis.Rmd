@@ -362,6 +362,28 @@ And here are the transitions infered by our algorithm. Note that the transition 
 transition_arrays[["20"]][,,203]
 ```
 
+## Transition Visualization
+
+Examining only residence times leaves open the possibility that kinkajous simply stay in areas with more flowers because they take more time to forage there. To asses how kinkajous make decisions when moving between regions, we also look at how kinkajous move from region to region.
+
+```{r transition heatmaps}
+nightly_transitions <- vector("list", length = length(transition_arrays))
+names(nightly_transitions)  <-  names(transition_arrays)
+for(i in seq_along(nightly_transitions)) {
+  nightly_transitions[[i]] <- apply(transition_arrays[[i]], MARGIN = c(1,2), sum)
+}
+heatmap(nightly_transitions[[13]], Rowv = NA, Colv = NA, xlab = "Region (to)", ylab = "Region (from)", main = "Transition Heatmap - Study Night 28")
+heatmap.2(nightly_transitions[[13]], Rowv = NA, Colv = NA, xlab = "Region (to)", ylab = "Region (from)", main = "Transition Heatmap - Study Night 28", cellnote = nightly_transitions[[13]], trace = "none")
+all_transitions <- Reduce("+", nightly_transitions)
+heatmap.2(all_transitions, Rowv = NA, Colv = NA, xlab = "Region (to)", ylab = "Region (from)", main = "Transition Heatmap - All Nights", cellnote = all_transitions, trace = "none")
+```
+
+The long right tail makes it a little difficult to see differences in the lower end of the transition numbers. We use a log transformation to make transisition rate differences visually clearer in the range of the data that actually represent transition decisions.
+
+```{r}
+heatmap.2(log(all_transitions + 1), Rowv = NA, Colv = NA, xlab = "Region (to)", ylab = "Region (from)", main = "Transition Heatmap - All Nights", cellnote = round(log(all_transitions + 1), 2), trace = "none")
+```
+
 ## Kinkajou Movement Reference Simulations
 
 There are many factors that could be influencing kinkajou movements within the balsa crown other than flower distributions or memory. Ooutside factors likely influence when kinkajous show up at all, and tree structure may influence how often kinkajous move between specific regions. One way to estimate how to seperate the influences of unknown parameters from the effects of interest is to simulate data to use as a reference. Here we simulate kinkajou movements within the tree crown using only average transition rates. In other words, these simulations allow us to understand how correlations between tree structure and flower counts, for example, might lead us to conclude flower counts influence kinkajou movements, even if the dynamics that shape movement are completely independant of flower counts. Here, we simulate two reference models. In the first, we maintain the overall timing of kinkajou visits by initializing kinkajous entering the tree at the same times (and to the same regions) as in the empirical data. The path the kinkajous take through the tree after this point, however, is determined stochastically using probabilities derived from the rate of kinkajou transitions between regions across the whole study. Thus, we can ask what range of parameter estimates would our model find if kinkajou movements were based purely on fixed, per minute transition rates and had no dependence on previous behavior, flower counts, other kinkajous etc. . .
@@ -370,11 +392,26 @@ In the second reference model, we also relax the deterministic constraints on wh
 
 ```{r reference_model_1_simulations}
 transition_probabilities <- t(apply(all_transitions, MARGIN = 1, FUN = function(X) X/sum(X))) #convert total transitions to proportions
-simulated_scans <- all_kinkajou_scans %>% select(timestamp, Region1_total, Region2_total, Region3_total, Study_night)
+simulated_scans <- all_kinkajou_scans %>% select(Region1_total, Region2_total, Region3_total, Study_night, timestamp)
 
 for(night in names(transition_arrays)){
-  simulated_scans[simulated_scans$Study_night == night,2:4] <- t(transition_arrays[[night]][4,-4,]) #indexes of transition arrays gets the number of entries into each region (vector of length 3) for each minute of a given night
+  simulated_scans[simulated_scans$Study_night == night,1:3] <- t(transition_arrays[[night]][4,-4,]) #indexes of transition arrays gets the number of entries into each region (vector of length 3) for each minute of a given night
 }
+
+entry_points <- which(simulated_scans[,1:3] == 1, arr.ind = TRUE)
+for(entry in seq_along(entry_points[,1])){
+  #The following code propagates each entry into the tree though time using the transition matrix until a 4 (exit) is drawn
+  i = entry_points[entry,1]
+  j = entry_points[entry,2]
+  study_night = simulated_scans$Study_night[i]
+  while(j != 4 & study_night == simulated_scans$Study_night[i]) {
+    j <- sample(1:4, size = 1, prob = transition_probabilities[j,])
+    i <- i + 1
+    simulated_scans[i,j] <- simulated_scans[i,j] + 1 
+  }
+  print("Simulated Kinkajou Exited")
+}
+
 
 
 ```
@@ -661,27 +698,6 @@ ggplot(flower_counts_region, aes(x = Study_night, y = Growth)) + geom_line(color
 
 Looking at flower counts and residence times by regions, there are not any strongly apparent differences in the interaction between balsa flowers and kinkajous.
 
-## Kinkajous Transitions
-
-Examining only residence times leaves open the possibility that kinkajous simply stay in areas with more flowers because they take more time to forage there. To asses how kinkajous make decisions when moving between regions, we also look at how kinkajous move from region to region.
-
-```{r transition heatmaps}
-nightly_transitions <- vector("list", length = length(transition_arrays))
-names(nightly_transitions)  <-  names(transition_arrays)
-for(i in seq_along(nightly_transitions)) {
-  nightly_transitions[[i]] <- apply(transition_arrays[[i]], MARGIN = c(1,2), sum)
-}
-heatmap(nightly_transitions[[13]], Rowv = NA, Colv = NA, xlab = "Region (to)", ylab = "Region (from)", main = "Transition Heatmap - Study Night 28")
-heatmap.2(nightly_transitions[[13]], Rowv = NA, Colv = NA, xlab = "Region (to)", ylab = "Region (from)", main = "Transition Heatmap - Study Night 28", cellnote = nightly_transitions[[13]], trace = "none")
-all_transitions <- Reduce("+", nightly_transitions)
-heatmap.2(all_transitions, Rowv = NA, Colv = NA, xlab = "Region (to)", ylab = "Region (from)", main = "Transition Heatmap - All Nights", cellnote = all_transitions, trace = "none")
-```
-
-The long right tail makes it a little difficult to see differences in the lower end of the transition numbers. We use a log transformation to make transisition rate differences visually clearer in the range of the data that actually represent transition decisions.
-
-```{r}
-heatmap.2(log(all_transitions + 1), Rowv = NA, Colv = NA, xlab = "Region (to)", ylab = "Region (from)", main = "Transition Heatmap - All Nights", cellnote = round(log(all_transitions + 1), 2), trace = "none")
-```
 
 ## Kinkajou Decisions
 
