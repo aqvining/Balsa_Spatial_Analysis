@@ -97,18 +97,22 @@ get_growth_index <- function(time_series) {
   return(c(rep(NA, times = removed), growth_index))
 }
 
-get_decision_info <- function(transition_array, flower_data){
+get_decision_info <- function(transition_array, flower_data, kinkajou_counts){
   # input:
-    #transition_array: an array with regions transitioned from in one dimension, regions transitioned to in the second, and time in the third, where each cell gives the number of transitions that occured from region x to region y at time t
-    #flower_data: a dataframe with columns Adjusted_Count and Region. Should only contains data from a singe study night
-  decision_transitions <- apply(transition_array, MARGIN = 3, FUN = function(X) {X *matrix(c(0,1,1,0,                                                                                                                                                              1,0,1,0,                                                                                                                                                              1,1,0,0,
+    #transition_array: an array with regions transitioned from in one dimension, regions transitioned to in the second, and time in the third, where each cell gives the number of transitions that occurred from region x to region y at time t
+    #flower_data: a dataframe with columns Adjusted_Count and Region. Should only contains data from a single study night
+    #kinkajou_counts: a dataframe with columns "timestamp", "Region1_total", "Region2_total", and "Region3_total". Should only contain data from a single study night
+  decision_transitions <- apply(transition_array, MARGIN = 3, FUN = function(X) {X *matrix(c(0,1,1,0,                                                                                                                                                                                                                                             1,0,1,0,                                                                       
+                                                                                             1,1,0,0,
                                                                                              0,0,0,0),nrow = 4, ncol = 4)} ) %>%#this matrix is multiplied with a transition matrix to remove all transitions that are not from one region to a different region
     array(dim = dim(transition_array))
+  
+  kinkajou_counts <- kinkajou_counts %>% relocate("Region1_total", "Region2_total", "Region3_total", "timestamp") #order columns so region columns can be indexed by the corresponding region integer
   
   if (sum(decision_transitions) <= 0) return(data.frame(matrix(ncol = 7, nrow = 0))) #if there are no decisions, returns a placeholder dataframe with 7 columns and 0 rows. Done to fit with the final form of the decision data.frame with columns for From, To, Minute, adj_flowers_to, Avoid, adj_flowers_avoid, and Study_night)
   #extract information about each decision in array
   decisions <- as.data.frame(which(decision_transitions > 0, arr.ind = TRUE)) #get array indices for all decisions
-  #below, duplicate any rows where the same decisions was made more than once in a minute
+  #below, duplicate any rows where the same decision was made more than once in a minute
   decisions <- data.frame(lapply(X = decisions, 
                                  FUN = rep, 
                                  times = mapply(function(data, dim1,dim2,dim3) data[dim1,dim2,dim3], dim1 = decisions$dim1, dim2=decisions$dim2, dim3=decisions$dim3, MoreArgs = list(data = decision_transitions))))
@@ -116,10 +120,12 @@ get_decision_info <- function(transition_array, flower_data){
   decisions <- mutate(decisions, 
                       relative_density_to = arrange(flower_data, Region)$Relative_Density[To], #get the relative flower density of the region moved to for each decision.
                       expected_rel_dens_to = arrange(flower_data, Region)$Expected_Relative_Density[To],
+                      kink_count_to = as.matrix(kinkajou_counts[,1:3])[cbind(Minute,To)],
                       Avoid = mapply(FUN = function(to, from){ which(! c(1,2,3) %in% c(to, from))}, to = To, from = From), #get the region avoided by checking the regions transitioned from and the the region transitioned to against the possible regions (1,2,3; not generalizable to more regions)
   )
   decisions <- mutate(decisions, relative_density_avoid = arrange(flower_data, Region)$Relative_Density[Avoid],
-                      expected_rel_dens_avoid = arrange(flower_data, Region)$Expected_Relative_Density[Avoid])
+                      expected_rel_dens_avoid = arrange(flower_data, Region)$Expected_Relative_Density[Avoid],
+                      kink_count_avoid = as.matrix(kinkajou_counts[, 1:3])[cbind(Minute,Avoid)])
   return(decisions)
 }
 
@@ -265,6 +271,7 @@ write.csv(all_kinkajou_scans_long, "../DATA/processed/all_kinkajou_scans.csv")
 With a quick operation, we also create a table of the total kinkajous-minutes spent in the whole crown and in each region on each night (where two kinkajous counted in the same regions during a scan consititutes two kinkajou-minutes
 )
 ```{r nightly_kink_counts}
+all_kinkajou_scans_long <- read.csv("../DATA/processed/all_kinkajou_scans.csv")[,-1]
 kinkajou_counts <- all_kinkajou_scans_long %>% group_by(Study_night) %>% summarise(Minutes_Per_Hour = get_kinkMinutesPerHour(Count)) %>% transform(Growth = get_growth_index(Minutes_Per_Hour))
 
 kinkajou_counts_region <- all_kinkajou_scans_long %>% group_by(Study_night, Region) %>% summarise(Minutes_Per_Hour = get_kinkMinutesPerHour(Count, categories = 2)) %>% group_by(Region) %>% group_modify(~ transform(.x, Growth = get_growth_index(Minutes_Per_Hour)))
@@ -305,7 +312,7 @@ names(transition_arrays) <- as.character(unique(all_kinkajou_scans$Study_night))
 
 #the below calculations wrangle the data into a long form data frame that can fit a binomial model to determine how many kinkajous are likely to depart from a region at any given minute, as a function of the number of kinkajous in that region and the number of kinkajous in other regions. Its a little crude but gets the job done
 stays <- lapply(transition_arrays, function(X) apply(X, 3, diag)[1:3,]) #diagonal element of each slice of transition array (representing a minute) give number of kinkajous that stayed in the region they were in on the previous minute
-departures <- lapply(transition_arrays, function(X) apply(X, c(1,3), sum)[1:3,] - apply(X, 3, diag)[1:3,]) #summing the rows of transition array slices gives the total number of kinkajous. Subjecting the slice diagonal gives the number that moved to a new region
+departures <- lapply(transition_arrays, function(X) apply(X, c(1,3), sum)[1:3,] - apply(X, 3, diag)[1:3,]) #summing the rows of transition array slices gives the total number of kinkajous. Subtracting the slice diagonal gives the number that moved to a new region
 departures_df <- c()
 for (i in seq_along(departures)){
   temp_df <- data.frame(Minute = 1:ncol(departures[[i]]), 
@@ -390,7 +397,7 @@ There are many factors that could be influencing kinkajou movements within the b
 
 In the second reference model, we also relax the deterministic constraints on when kinkajous enter the tree. To do this, we determine the average rate of kinkajous entering the tree, and simulate this across the study period, regardless of when kinkajous actually visited.
 
-```{r reference_model_1_simulations}
+```{r reference_model_1_simulations, eval = FALSE}
 transition_probabilities <- t(apply(all_transitions, MARGIN = 1, FUN = function(X) X/sum(X))) #convert total transitions to proportions
 
 entries <- all_kinkajou_scans %>% select(Region1_total, Region2_total, Region3_total, Study_night, timestamp)
@@ -421,7 +428,7 @@ for(sim in seq_along(simulated_scans)){
   print(paste("simulation", sim, "finished", sep = " "))
 }
 
-write.csv(simulated_scans, file = "../Results/reference_simulations1.csv")
+save(simulated_scans, file = "../Results/reference_simulations1.Rdata")
 ```
 
 ## Drone Image Processing and Flower Counts
@@ -453,7 +460,7 @@ all_upflowers <- all_upflowers %>% mutate(Study_night = sapply(Date, function(X)
 print(head(all_upflowers))
 ```
 
-Some of the data in these files come from nights where Nele assed the image quality of the orthomosaic as too poor to accurately count flowers. We remove data from nights marked as such.
+Some of the data in these files come from nights where Nele assessed the image quality of the orthomosaic as too poor to accurately count flowers. We remove data from nights marked as such.
 
 ```{r flower count cleaning}
 all_upflowers <- all_upflowers %>% filter(Time == "AM" | !Study_night %in% c(23, 26, 25, 32)) %>% #remove data from images marked in notes as poor quality photos
@@ -518,37 +525,44 @@ combined_data_region <- merge(flower_counts_region, kinkajou_counts_region, by =
 
 ### Transition Decisions
 
-Then, we extract from all transitions those that reflect binary "decisions" (i.e. movement from one region to a different region). We annote these decisions with adjusted flower counts in the region moved to and the region avoided, setting up the data-frame to enable analysis of decisions with a binary response. In this response, a 1 indicates that the kinkajou moved to the region with the higher adjusted flower count.
+Then, we extract from all transitions those that reflect binary "decisions" (i.e. movement from one region to a different region). We annote these decisions with adjusted flower counts and kinkajou counts in the region moved to and the region avoided, setting up the data-frame to enable analysis of decisions with a binary response. In this response, a 1 indicates that the kinkajou moved to the region with the higher adjusted flower count.
 
 ```{r transition decisions}
 decisions <- c()
 for(i in seq_along(transition_arrays)){
-  new_decisions <- get_decision_info(transition_array = transition_arrays[[i]], flower_data = filter(combined_data_region, Study_night == names(transition_arrays[i]))) #see helper functions for get_decision_info
+  new_decisions <- get_decision_info(transition_array = transition_arrays[[i]], flower_data = filter(combined_data_region, Study_night == names(transition_arrays[i])), kinkajou_counts = filter(all_kinkajou_scans_long, Study_night == names(transition_arrays[i]))) #see helper functions for get_decision_info
   if(nrow(new_decisions) > 0) new_decisions$Study_night = names(transition_arrays[i])
   decisions = rbind(decisions, new_decisions)
 }
-decisions <- mutate(decisions, relative_density_diff = relative_density_to - relative_density_avoid,
-                    expected_density_diff = expected_rel_dens_to - expected_rel_dens_avoid)
+decisions <- decisions %>% mutate(relative_density_diff = relative_density_to - relative_density_avoid,
+                                  expected_density_diff = expected_rel_dens_to - expected_rel_dens_avoid,
+                                  kinkajou_diff = kink_count_to - kink_count_avoid)
 decisions <- mutate(decisions, Success = relative_density_diff > 0, 
                     Success_Expected = expected_density_diff > 0,
+                    Success_Social = kink_counts_to - kink_counts_avoid > 0,
                     From_To = factor(mapply(paste, From, To, MoreArgs = list(sep = "_"))))
 ```
 
 ### Solo Movement Sequences
 
 ```{r solo bout extraction}
-solo_visits <- all_kinkajou_scans %>% 
-  filter((Region1_total + Region2_total + Region3_total) == 1)
-
-solo_visits$location = NA
-solo_visits$sequence = 1
-for(i in 1:nrow(solo_visits)) {
-  solo_visits$location[i] <- which(c(solo_visits$Region1_total[i], solo_visits$Region2_total[i], solo_visits$Region3_total[i]) == 1)
-  if (i >= 2) {
-    if (difftime(solo_visits$timestamp[i], solo_visits$timestamp[i-1], units = "mins") != 1) { solo_visits$sequence[i] = solo_visits$sequence[i-1] + 1
-    } else solo_visits$sequence[i] = solo_visits$sequence[i-1]
-  } 
+extract_bouts <- function(all_scans) {
+  solo_visits <- all_scans %>% 
+    filter((Region1_total + Region2_total + Region3_total) == 1)
+  
+  solo_visits$location = NA
+  solo_visits$sequence = 1
+  for(i in 1:nrow(solo_visits)) {
+    solo_visits$location[i] <- which(c(solo_visits$Region1_total[i], solo_visits$Region2_total[i], solo_visits$Region3_total[i]) == 1)
+    if (i >= 2) {
+      if (difftime(solo_visits$timestamp[i], solo_visits$timestamp[i-1], units = "mins") != 1) { solo_visits$sequence[i] = solo_visits$sequence[i-1] + 1
+      } else solo_visits$sequence[i] = solo_visits$sequence[i-1]
+    } 
+  }
+  return(solo_visits)
 }
+
+solo_visits <- extract_bouts(all_kinkajou_scans)
 
 #combine sequences 1 and 2, which are separated by a gap in video meant to fix clock drift
 solo_visits$sequence[solo_visits$sequence == 2] <- 1
@@ -575,6 +589,13 @@ solo_visits$sequence[solo_visits$sequence == 79] <- 78
 solo_visits$sequence[solo_visits$sequence == 89] <- 88
 #Combine 93 and 94, which are only seperated by a missing minute
 solo_visits$sequence[solo_visits$sequence == 79] <- 78
+```
+
+#### Movement Rondomization Reference Model
+
+```{r solo bout reference model 1 extraction}
+load("../Results/reference_simulations1.Rdata")
+reference1_solo_visits <- lapply(simulated_scans, extract_bouts)
 ```
 # Data Visualization
 
@@ -1424,10 +1445,18 @@ ggplot(social_predictions, aes(x = Predicted_Probability, y = factor(n), group =
 
 ### Sequence Predictability
 ```{r get_full_sequence_R}
-solo_transition_sequence <- solo_visits %>% group_by(sequence) %>% summarize(transitions = paste(rle(location)$values, collapse = ""))
-solo_transition_sequence <- paste(solo_transition_sequence$transitions, collapse = "S") %>% strsplit(split = "")
+get_entropy <- function(solo_visits) {
+  solo_transition_sequence <- solo_visits %>% group_by(sequence) %>% summarize(transitions = paste(rle(location)$values, collapse = ""))
+  solo_transition_sequence <- paste(solo_transition_sequence$transitions, collapse = "S") %>% strsplit(split = "")
+  return(entropy(solo_transition_sequence[[1]])) #from entropy analysis code, loaded at top of markdown
+}
 
-solo_transition_entropy <- entropy(solo_transition_sequence[[1]])
-transitions_R = 1-  min(solo_transition_entropy)
+empirical_entropy <- get_entropy(solo_visits)
+reference1_entropy <- lapply(reference1_solo_visits, get_entropy)
 
+{plot(empirical_entropy, type = "l", lwd = 2, ylim = c(min(unlist(reference1_entropy)), max(unlist(reference1_entropy))))
+  for(i in seq_along(reference1_entropy)){
+    lines(reference1_entropy[[i]], col = alpha("red", 0.1))
+  }
+}
 ```
