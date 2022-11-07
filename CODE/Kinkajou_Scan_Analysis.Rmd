@@ -1206,7 +1206,7 @@ stancode(decision_model)
 load("../Results/decision_model.Rdata")
 #Get predictions from each sample of the posterior for each night in the study
 precis(decision_model)
-plot(decision_model)
+#plot(decision_model)
 pairs(decision_model, pars = c("ap_From_To", "ap", "bp_flowers"))
 
 ```
@@ -1231,7 +1231,7 @@ decision_samples_long %>%
 ```
 
 ```{r plot_decision_model_predictions1}
-decision_samples <- extract.samples(decision_model)
+decision_samples <- extract.samples(decision_model, pars = c(decision_model@pars, "p"))
 CI <- quantile(decision_samples$p, probs = c(0.055, 0.945))
 den <- density(decision_samples$p)
 l <- min(which(den$x >= CI[1])) 
@@ -1246,7 +1246,7 @@ h <- max(which(den$x < CI[2]))
 ```
 
 ```{r plot_decision_model_predictions2}
-decision_predictions <- decision_samples$p %>% data.frame %>%
+decision_predictions <- decision_samples$p %>% data.frame() %>%
   mutate(Draw = 1:n()) %>%
   pivot_longer(cols = -Draw, names_to = "Observation_Number", values_to = "Predicted_Probability") %>%
   mutate(Observation_Number = Observation_Number %>% strsplit(split = "") %>% sapply(function(X) paste(X[-1], collapse = "")) %>% as.numeric) %>%
@@ -1300,13 +1300,13 @@ stancode(decision_model_expectation)
 load("../Results/decision_model_expectation.Rdata")
 #Get predictions from each sample of the posterior for each night in the study
 precis(decision_model_expectation)
-plot(decision_model_expectation)
+#plot(decision_model_expectation)
 pairs(decision_model_expectation, pars = c("ap_From_To", "ap", "bp_flowers"))
 
 ```
 
 ```{r decision_samples2}
-decision_samples_long <- decision_model_expectation %>%
+expectation_decision_samples_long <- decision_model_expectation %>%
   gather_draws(ap, bp_flowers,
                #can't get regular expressions to work in this, so have to write everything manually /:
                ap_From_To.1,ap_From_To.2,ap_From_To.3,ap_From_To.4,ap_From_To.5,ap_From_To.6,
@@ -1314,7 +1314,7 @@ decision_samples_long <- decision_model_expectation %>%
 
 
 #determine and plot average predictions with 89% CIs
-decision_samples_long %>%
+expectation_decision_samples_long %>%
   ggplot() + 
   stat_density_ridges(aes(x = .value, y = .variable), scale = 1, quantile_lines = TRUE, quantiles = c(0.055, 0.945)) + #the quantile lines on total flowers look wrong . . .
   geom_vline(xintercept = 0, color = "red", linetype = "dashed") +
@@ -1325,9 +1325,9 @@ decision_samples_long %>%
 ```
 
 ```{r plot_decision_model_predictions1}
-decision_samples <- extract.samples(decision_model)
-CI <- quantile(decision_samples$p, probs = c(0.055, 0.945))
-den <- density(decision_samples$p)
+expectation_decision_samples <- extract.samples(decision_model_expectation, pars = c(decision_model_expectation@pars, "p"))
+CI <- quantile(expectation_decision_samples$p, probs = c(0.055, 0.945))
+den <- density(expectation_decision_samples$p)
 l <- min(which(den$x >= CI[1])) 
 h <- max(which(den$x < CI[2]))
 {
@@ -1440,6 +1440,101 @@ ggplot(social_predictions, aes(x = Predicted_Probability, y = factor(n), group =
   coord_flip() + 
   theme_classic() + 
   facet_grid(vars(Region), vars(Neighbors))
+
+```
+
+#### Social Decision Making
+
+```{r social decision model, eval = FALSE}
+social_decision_model <- ulam(
+  alist(
+    Success_Social ~ binomial(1, p),
+    logit(p) <-  ap + ap_From_To[From_To] + bp_kinkajous * kinkajou_diff,
+    #priors below
+    ap ~ dnorm(0,2), #prior centers initial probability distribution of successful transition at 50% 
+    ap_From_To[From_To] ~ dnorm(0, ap_sigma_choice), #prior distribution on random effects of region (probability of 0)
+    bp_kinkajous ~ dnorm(0, 2), #prior distribution on effect of flower density differential on success rate
+    ap_sigma_choice ~ dexp(1)), #prior distributions for variance parameters,
+  data = decisions %>% 
+    filter(kinkajou_diff != 0) %>% 
+    mutate(kinkajou_diff = abs(kinkajou_diff), From_To = factor(From_To)) %>% 
+    select(kinkajou_diff, From_To, Success_Social) %>% 
+    na.omit(), 
+  cores=4 , 
+  chains=4 , 
+  warmup=1500, 
+  iter=3000, 
+  constraints=list(ap_sigma_choice="lower=0"),
+  log_lik = TRUE
+)
+
+save(social_decision_model, file = "../Results/social_decision_model.Rdata")
+stancode(social_decision_model)
+```
+
+```{r social decision posteriors}
+load("../Results/social_decision_model.Rdata")
+#Get predictions from each sample of the posterior for each night in the study
+precis(social_decision_model)
+#plot(social_decision_model)
+pairs(social_decision_model, pars = c("ap_From_To", "ap", "bp_kinkajous"))
+
+```
+
+```{r social_decision_samples}
+social_decision_samples_long <- social_decision_model %>%
+  gather_draws(ap, bp_kinkajous,
+               #can't get regular expressions to work in this, so have to write everything manually /:
+               ap_From_To.1,ap_From_To.2,ap_From_To.3,ap_From_To.4,ap_From_To.5
+               )
+
+
+#determine and plot average predictions with 89% CIs
+social_decision_samples_long %>%
+  ggplot() + 
+  stat_density_ridges(aes(x = .value, y = .variable), scale = 1, quantile_lines = TRUE, quantiles = c(0.055, 0.945)) + #the quantile lines on total flowers look wrong . . .
+  geom_vline(xintercept = 0, color = "red", linetype = "dashed") +
+  theme_classic() +
+  labs(title = "Posterior Distribution of Coefficients on Success Probability",
+       x = "Estimate Effect",
+       y = "Coefficient")
+```
+
+```{r plot_social_decision_model_predictions1}
+social_decision_samples <- extract.samples(social_decision_model, pars = c(social_decision_model@pars, "p"))
+CI <- quantile(social_decision_samples$p, probs = c(0.055, 0.945))
+den <- density(social_decision_samples$p)
+l <- min(which(den$x >= CI[1])) 
+h <- max(which(den$x < CI[2]))
+{
+  plot(den)
+  polygon(c(den$x[c(l, l:h, h)]),
+        c(0, den$y[l:h], 0),
+        col = "slateblue1")
+}
+
+```
+
+```{r plot_decision_model_predictions2}
+social_decision_predictions <- social_decision_samples$p %>% data.frame %>%
+  mutate(Draw = 1:n()) %>%
+  pivot_longer(cols = -Draw, names_to = "Observation_Number", values_to = "Predicted_Probability") %>%
+  mutate(Observation_Number = Observation_Number %>% strsplit(split = "") %>% sapply(function(X) paste(X[-1], collapse = "")) %>% as.numeric) %>%
+  mutate(Kinkajou_Diff = social_decision_model@data$kinkajou_diff[Observation_Number],
+         From_To = social_decision_model@data$From[Observation_Number],
+         Success_Social = social_decision_model@data$Success_Social[Observation_Number])
+
+From_To_labs <- c("1->2", "1->3", "2->1", "2->3", "3->2")
+names(From_To_labs) <-  as.character(1:5)
+
+ggplot(social_decision_predictions, aes(x = Predicted_Probability, y = reorder(factor(Observation_Number), Kinkajou_Diff), color = factor(Success_Social))) + 
+  #scale_y_discrete(labels = round(sort(decision_model@data$relative_density_diff), digits = 3)) +
+  geom_density_ridges() + 
+  theme(axis.text.y = element_text(angle = 90)) +
+  labs(x = "Predicted Probability", y = "Observation Number (arranged by relative density difference)") +
+  coord_flip() + 
+  theme_classic() + 
+  facet_wrap(~From_To, ncol = 1, labeller = labeller(From_To = From_To_labs))
 
 ```
 
