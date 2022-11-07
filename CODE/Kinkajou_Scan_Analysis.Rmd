@@ -539,7 +539,7 @@ decisions <- decisions %>% mutate(relative_density_diff = relative_density_to - 
                                   kinkajou_diff = kink_count_to - kink_count_avoid)
 decisions <- mutate(decisions, Success = relative_density_diff > 0, 
                     Success_Expected = expected_density_diff > 0,
-                    Success_Social = kink_counts_to - kink_counts_avoid > 0,
+                    Success_Social = kink_count_to - kink_count_avoid > 0,
                     From_To = factor(mapply(paste, From, To, MoreArgs = list(sep = "_"))))
 ```
 
