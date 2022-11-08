@@ -393,7 +393,7 @@ heatmap.2(log(all_transitions + 1), Rowv = NA, Colv = NA, xlab = "Region (to)", 
 
 ## Kinkajou Movement Reference Simulations
 
-There are many factors that could be influencing kinkajou movements within the balsa crown other than flower distributions or memory. Ooutside factors likely influence when kinkajous show up at all, and tree structure may influence how often kinkajous move between specific regions. One way to estimate how to seperate the influences of unknown parameters from the effects of interest is to simulate data to use as a reference. Here we simulate kinkajou movements within the tree crown using only average transition rates. In other words, these simulations allow us to understand how correlations between tree structure and flower counts, for example, might lead us to conclude flower counts influence kinkajou movements, even if the dynamics that shape movement are completely independant of flower counts. Here, we simulate two reference models. In the first, we maintain the overall timing of kinkajou visits by initializing kinkajous entering the tree at the same times (and to the same regions) as in the empirical data. The path the kinkajous take through the tree after this point, however, is determined stochastically using probabilities derived from the rate of kinkajou transitions between regions across the whole study. Thus, we can ask what range of parameter estimates would our model find if kinkajou movements were based purely on fixed, per minute transition rates and had no dependence on previous behavior, flower counts, other kinkajous etc. . .
+There are many factors that could be influencing kinkajou movements within the balsa crown other than flower distributions or memory. Ooutside factors likely influence when kinkajous show up at all, and tree structure may influence how often kinkajous move between specific regions. One way to estimate how to separate the influences of unknown parameters from the effects of interest is to simulate data to use as a reference. Here we simulate kinkajou movements within the tree crown using only average transition rates. In other words, these simulations allow us to understand how correlations between tree structure and flower counts, for example, might lead us to conclude flower counts influence kinkajou movements, even if the dynamics that shape movement are completely independant of flower counts. Here, we simulate two reference models. In the first, we maintain the overall timing of kinkajou visits by initializing kinkajous entering the tree at the same times (and to the same regions) as in the empirical data. The path the kinkajous take through the tree after this point, however, is determined stochastically using probabilities derived from the rate of kinkajou transitions between regions across the whole study. Thus, we can ask what range of parameter estimates would our model find if kinkajou movements were based purely on fixed, per minute transition rates and had no dependence on previous behavior, flower counts, other kinkajous etc. . .
 
 In the second reference model, we also relax the deterministic constraints on when kinkajous enter the tree. To do this, we determine the average rate of kinkajous entering the tree, and simulate this across the study period, regardless of when kinkajous actually visited.
 
@@ -548,14 +548,14 @@ decisions <- mutate(decisions, Success = relative_density_diff > 0,
 ```{r solo bout extraction}
 extract_bouts <- function(all_scans) {
   solo_visits <- all_scans %>% 
-    filter((Region1_total + Region2_total + Region3_total) == 1)
+    filter((Region1_total + Region2_total + Region3_total) == 1) #only include rows where there is exactly one kinkajou
   
   solo_visits$location = NA
   solo_visits$sequence = 1
   for(i in 1:nrow(solo_visits)) {
-    solo_visits$location[i] <- which(c(solo_visits$Region1_total[i], solo_visits$Region2_total[i], solo_visits$Region3_total[i]) == 1)
+    solo_visits$location[i] <- which(c(solo_visits$Region1_total[i], solo_visits$Region2_total[i], solo_visits$Region3_total[i]) == 1) #where is the kinkajou?
     if (i >= 2) {
-      if (difftime(solo_visits$timestamp[i], solo_visits$timestamp[i-1], units = "mins") != 1) { solo_visits$sequence[i] = solo_visits$sequence[i-1] + 1
+      if (difftime(solo_visits$timestamp[i], solo_visits$timestamp[i-1], units = "mins") != 1) { solo_visits$sequence[i] = solo_visits$sequence[i-1] + 1 #is this a new bout?
       } else solo_visits$sequence[i] = solo_visits$sequence[i-1]
     } 
   }
@@ -1554,4 +1554,33 @@ reference1_entropy <- lapply(reference1_solo_visits, get_entropy)
     lines(reference1_entropy[[i]], col = alpha("red", 0.1))
   }
 }
+```
+The figure above reveals an unexpected result: the 2nd order conditional entropy of simulated solo bouts is typically lower than that of the empircal solo bouts. Given that the second order conditional entropy is defined by the transition rates derived from the full data and fed into the simulations, these should be the same. However, the transition rates were calculated from the FULL data, no the solo bouts. Thus, it is possible that the empircal solo bouts transition with lesser second order conditional entropy than the full data set. Getting transition rates from the solo bouts and running simulations based on those may be the more appropiate way to analyze this. Additionally, the exisitance of a difference suggests that kinkajous move through the tree differently when there are no other kinkajous present.
+
+We do this below
+
+```{r solo_bout_simulations}
+#need to modify to include entries and exits for appropriately calculating transition matrix
+get_solo_entry_and_exit <- function(solo_bout, count_data) {
+#input: a dataframe with columns "timestamp" and "location" (solo bout) and a dataframe with column "timestamp" (count data), where rows of solo_bout are a contiguous subset of count data.
+#output: the solo bout data frame with rows appended from count data with the data from exactly 60 seconds before and after the first and last entry in solo bout, respectively
+  entry_row <- count_data[count_data$timestamp == (solo_bout$timestamp[1] - 60),] #get row from data 1 minute before entry (60 sec)
+  entry_row$location <- NA
+  
+  exit_row <- count_data[count_data$timestamp == (solo_bout$timestamp[nrow(solo_bout)] + 60),]  #get row from data 1 after before exit (60 sec)
+  exit_row$location <- NA
+  
+  return(rbind(entry_row, solo_bout, exit_row))
+}
+
+solo_transitions <- solo_visits %>% 
+  group_by(sequence) %>% 
+  group_modify( ~ get_solo_entry_and_exit(.x, all_kinkajou_scans)) %>% 
+  select(Region1_total, Region2_total, Region3_total, timestamp, sequence) %>%
+  group_by(sequence) %>% 
+  group_map(~ get_transitions(.x))
+
+names(solo_transitions) <- unique(solo_visits$sequence)
+
+solo_transition_matrix <- Reduce("+", lapply(solo_transitions, function(X) apply(X, MARGIN = c(1,2), sum))) #get the transition matrices for each sequence by applying sum across the third dimension of transition arrays in the solo_transitions list, then add these matrices together using the reduce function
 ```
