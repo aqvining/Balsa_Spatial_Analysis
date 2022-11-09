@@ -241,6 +241,7 @@ for(file_name in file_names) {
 }
 
 head(all_kinkajou_scans)
+write.csv(all_kinkajou_scans, "../DATA/processed/all_kinkajou_scans.csv")
 ```
 
 We continue preparing the kinkajous count data by converting the data from a) total kinkajous per region and b) hidden kinkajous per region to a) visible kinkajous per region and b) hidden kinkajous per region. This makes analysis using either type of count separately easier.
@@ -264,7 +265,7 @@ all_kinkajou_scans_long <- pivot_longer(all_kinkajou_scans,
 
 all_kinkajou_scans_long$Region <- sapply(all_kinkajou_scans_long$Region, switch, "Region1" = "1", "Region2" = "2", "Region3" = "3") %>% factor()
 
-write.csv(all_kinkajou_scans_long, "../DATA/processed/all_kinkajou_scans.csv")
+write.csv(all_kinkajou_scans_long, "../DATA/processed/all_kinkajou_scans_long.csv")
 ```
 
 ### Residence Times
@@ -309,7 +310,10 @@ get_transitions <- function(count_data){
 
 transition_arrays <- all_kinkajou_scans %>% group_by(Study_night) %>% group_map(~get_transitions(.x))
 names(transition_arrays) <- as.character(unique(all_kinkajou_scans$Study_night))
+save(transition_arrays, file = "../data/processed/transition_arrays.Rdata")
+```
 
+```{r departures_data}
 #the below calculations wrangle the data into a long form data frame that can fit a binomial model to determine how many kinkajous are likely to depart from a region at any given minute, as a function of the number of kinkajous in that region and the number of kinkajous in other regions. Its a little crude but gets the job done
 stays <- lapply(transition_arrays, function(X) apply(X, 3, diag)[1:3,]) #diagonal element of each slice of transition array (representing a minute) give number of kinkajous that stayed in the region they were in on the previous minute
 departures <- lapply(transition_arrays, function(X) apply(X, c(1,3), sum)[1:3,] - apply(X, 3, diag)[1:3,]) #summing the rows of transition array slices gives the total number of kinkajous. Subtracting the slice diagonal gives the number that moved to a new region
@@ -391,45 +395,7 @@ The long right tail makes it a little difficult to see differences in the lower 
 heatmap.2(log(all_transitions + 1), Rowv = NA, Colv = NA, xlab = "Region (to)", ylab = "Region (from)", main = "Transition Heatmap - All Nights", cellnote = round(log(all_transitions + 1), 2), trace = "none")
 ```
 
-## Kinkajou Movement Reference Simulations
 
-There are many factors that could be influencing kinkajou movements within the balsa crown other than flower distributions or memory. Ooutside factors likely influence when kinkajous show up at all, and tree structure may influence how often kinkajous move between specific regions. One way to estimate how to separate the influences of unknown parameters from the effects of interest is to simulate data to use as a reference. Here we simulate kinkajou movements within the tree crown using only average transition rates. In other words, these simulations allow us to understand how correlations between tree structure and flower counts, for example, might lead us to conclude flower counts influence kinkajou movements, even if the dynamics that shape movement are completely independant of flower counts. Here, we simulate two reference models. In the first, we maintain the overall timing of kinkajou visits by initializing kinkajous entering the tree at the same times (and to the same regions) as in the empirical data. The path the kinkajous take through the tree after this point, however, is determined stochastically using probabilities derived from the rate of kinkajou transitions between regions across the whole study. Thus, we can ask what range of parameter estimates would our model find if kinkajou movements were based purely on fixed, per minute transition rates and had no dependence on previous behavior, flower counts, other kinkajous etc. . .
-
-In the second reference model, we also relax the deterministic constraints on when kinkajous enter the tree. To do this, we determine the average rate of kinkajous entering the tree, and simulate this across the study period, regardless of when kinkajous actually visited.
-
-```{r reference_model_1_simulations, eval = FALSE}
-transition_probabilities <- t(apply(all_transitions, MARGIN = 1, FUN = function(X) X/sum(X))) #convert total transitions to proportions
-
-entries <- all_kinkajou_scans %>% select(Region1_total, Region2_total, Region3_total, Study_night, timestamp)
-for(night in names(transition_arrays)){
-  entries[entries$Study_night == night,1:3] <- t(transition_arrays[[night]][4,-4,]) #indexes of transition arrays gets the number of entries into each region (vector of length 3) for each minute of a given night
-}
-entry_points <- which(entries[,1:3] == 1, arr.ind = TRUE)
-
-
-simulated_scans = vector(mode = "list", length = 100)
-for(sim in seq_along(simulated_scans)){
-  simulated_scans[[sim]] <- entries
-  for(entry in seq_along(entry_points[,1])){
-    #The following code propagates each entry into the tree though time using the transition matrix until a 4 (exit) is drawn
-    i = entry_points[entry,1]
-    j = entry_points[entry,2]
-    study_night = simulated_scans[[sim]]$Study_night[i]
-    while(j != 4 & study_night == simulated_scans[[sim]]$Study_night[i]) {
-      j <- sample(1:4, size = 1, prob = transition_probabilities[j,])
-      if(j != 4) {
-        if(i < nrow(simulated_scans[[sim]])){ 
-          i <- i + 1
-          simulated_scans[[sim]][i,j] <- simulated_scans[[sim]][i,j] + 1 
-        } else j <- 4 #simulated kinkajou exits if end of study period arrives
-      }
-    }
-  }
-  print(paste("simulation", sim, "finished", sep = " "))
-}
-
-save(simulated_scans, file = "../Results/reference_simulations1.Rdata")
-```
 
 ## Drone Image Processing and Flower Counts
 
@@ -503,6 +469,8 @@ for(i in 1:nrow(flower_counts_region)){
                                                                    Study_night < flower_counts_region$Study_night[i] &
                                                                      Region == flower_counts_region$Region[i])$Relative_Density)
 }
+
+save(flower_counts_region, file = "../data/processed/flower_counts_region.Rdata")
 
 #flower_averages are used in next code chunk to calculate adjusted values
 flower_averages <- flower_counts_region %>% 
@@ -591,12 +559,7 @@ solo_visits$sequence[solo_visits$sequence == 89] <- 88
 solo_visits$sequence[solo_visits$sequence == 79] <- 78
 ```
 
-#### Movement Rondomization Reference Model
 
-```{r solo bout reference model 1 extraction}
-load("../Results/reference_simulations1.Rdata")
-reference1_solo_visits <- lapply(simulated_scans, extract_bouts)
-```
 # Data Visualization
 
 With the data prepared, we visualize spatio-temporal patterns of both flowers and kinkajous within the tree-crown as a whole and within regions of the tree crown. Based on our hypotheses, we made some predictions about patterns we expected to see.
@@ -1583,4 +1546,55 @@ solo_transitions <- solo_visits %>%
 names(solo_transitions) <- unique(solo_visits$sequence)
 
 solo_transition_matrix <- Reduce("+", lapply(solo_transitions, function(X) apply(X, MARGIN = c(1,2), sum))) #get the transition matrices for each sequence by applying sum across the third dimension of transition arrays in the solo_transitions list, then add these matrices together using the reduce function
+
+solo_transition_probabilities <- t(apply(solo_transition_matrix, MARGIN = 1, FUN = function(X) X/sum(X))) #convert total transitions to proportions
+
+entries <- all_kinkajou_scans %>% select(Region1_total, Region2_total, Region3_total, Study_night, timestamp)
+for(night in names(transition_arrays)){
+  entries[entries$Study_night == night,1:3] <- t(transition_arrays[[night]][4,-4,]) #indexes of transition arrays gets the number of entries into each region (vector of length 3) for each minute of a given night
+}
+entry_points <- which(entries[,1:3] == 1, arr.ind = TRUE)
+
+#simulate movement using solo bout transition matrix
+simulated_scans_solo = vector(mode = "list", length = 100)
+for(sim in seq_along(simulated_scans_solo)){
+  simulated_scans_solo[[sim]] <- entries
+  for(entry in seq_along(entry_points[,1])){
+    #The following code propagates each entry into the tree though time using the transition matrix until a 4 (exit) is drawn
+    i = entry_points[entry,1]
+    j = entry_points[entry,2]
+    study_night = simulated_scans_solo[[sim]]$Study_night[i]
+    while(j != 4 & study_night == simulated_scans_solo[[sim]]$Study_night[i]) {
+      j <- sample(1:4, size = 1, prob = solo_transition_probabilities[j,])
+      if(j != 4) {
+        if(i < nrow(simulated_scans_solo[[sim]])){ 
+          i <- i + 1
+          simulated_scans_solo[[sim]][i,j] <- simulated_scans_solo[[sim]][i,j] + 1 
+        } else j <- 4 #simulated kinkajou exits if end of study period arrives
+      }
+    }
+  }
+  print(paste("simulation", sim, "finished", sep = " "))
+}
+
+save(simulated_scans_solo, file = "../Results/reference_simulations1_solo.Rdata")
+
+reference1_solo_visits <- lapply(simulated_scans_solo, extract_bouts)
+```
+
+```{r get_full_sequence_R_solo_transitions}
+get_entropy <- function(solo_visits) {
+  solo_transition_sequence <- solo_visits %>% group_by(sequence) %>% summarize(transitions = paste(rle(location)$values, collapse = ""))
+  solo_transition_sequence <- paste(solo_transition_sequence$transitions, collapse = "S") %>% strsplit(split = "")
+  return(entropy(solo_transition_sequence[[1]])) #from entropy analysis code, loaded at top of markdown
+}
+
+empirical_entropy <- get_entropy(solo_visits)
+reference1_entropy <- lapply(reference1_solo_visits, get_entropy)
+
+{plot(empirical_entropy, type = "l", lwd = 2, ylim = c(min(unlist(reference1_entropy)), max(unlist(reference1_entropy))))
+  for(i in seq_along(reference1_entropy)){
+    lines(reference1_entropy[[i]], col = alpha("red", 0.1))
+  }
+}
 ```
